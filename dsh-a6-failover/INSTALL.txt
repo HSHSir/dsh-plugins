@@ -1,11 +1,11 @@
-dsh-a6-failover 0.6.2 · Windows 安装
+dsh-a6-failover 0.6.3 · Windows 安装
 
 1. 安装符合包要求的 DSH（>=0.2.1-rc.2 <0.4.0-0）和 Node.js 18.17 或以上版本。启动一次 DSH，让它创建 profile。
-2. 解压 0.6.2 源码或发布包，在含 package.json 的解压目录打开 PowerShell。默认 DSH 数据目录为 %USERPROFILE%\.dsh，自定义目录时先设置当前终端的 DSH_HOME。
+2. 解压 0.6.3 源码或发布包，在含 package.json 的解压目录打开 PowerShell。默认 DSH 数据目录为 %USERPROFILE%\.dsh，自定义目录时先设置当前终端的 DSH_HOME。
 3. 桌面版运行 node scripts/install.mjs --profile desktop。使用 CLI Web profile 时运行 node scripts/install.mjs --profile web。
 4. 完全退出 DSH（包括托盘进程），然后重新打开。
 5. 在 DSH 配置 A6API provider、模型和模型 API 密钥。使用默认匹配规则时，provider 名称以 a6api 开头。
 6. 在 DSH 设置的「A6 换商家」中确认控制面站点，填写该站点的系统访问令牌和用户 ID 后保存。
-7. 打开 DSH 数据目录中的 a6-failover\events.jsonl，查看最近一次 boot 事件，确认 version 为 0.6.2。
+7. 打开 DSH 数据目录中的 a6-failover\events.jsonl，查看最近一次 boot 事件，确认 version 为 0.6.3。
 
 平台路由、自动接管、手动切换和卸载方法见 README.md。

@@ -120,9 +120,9 @@ window.__ModuleLoader__.load({
       },
       {
         "key": "maxPriceRatio",
-        "label": "输入标价 / 官网标价上限",
+        "label": "额外限制输入单价（可选）",
         "type": "number",
-        "hint": "小于 1 时启用额外门槛；大于等于 1 时关闭。",
+        "hint": "1 表示关闭。0.5 表示输入单价最多为官网一半；不考虑缓存优惠。通常保持 1，仅使用实际成本门槛。",
         "step": 0.05,
         "min": 0
       },
@@ -144,9 +144,9 @@ window.__ModuleLoader__.load({
       },
       {
         "key": "minSamples",
-        "label": "最少统计样本数",
+        "label": "商家统计至少需要几次请求",
         "type": "number",
-        "hint": "不足此样本数的商家淘汰。",
+        "hint": "站点统计请求数低于此值时不选该商家。10 表示至少有 10 次记录；0 关闭此项，可能选到数据不足的新商家。",
         "step": 10,
         "min": 0
       },
@@ -224,17 +224,41 @@ window.__ModuleLoader__.load({
     "note": "缓存命中率已计入成本估算。保存权重后，点「重新拉取」查看更新后的排名。"
   },
   {
-    "title": "3 · 排序",
-    "open": true,
-    "description": "固定规则：总分从低到高排列；同分时渠道 ID 从小到大排列。切换时选择第一家未被排除的候选。",
-    "fields": [],
-    "note": "此阶段没有需要调整的配置。下方商家表展示当前缓存的候选排名和总分。"
-  },
-  {
-    "title": "4 · 切换策略",
+    "title": "3 · 切换与等待",
     "open": false,
-    "description": "请求失败后，按预算选择商家、固定商家并重试；无法固定时尝试撤销固定，再使用备用路由。",
+    "description": "等待时间按每次模型请求计算；重试、换商和等待新商家首块共享总预算。",
     "fields": [
+      {
+        "key": "firstResponseTimeoutMs",
+        "label": "原路无响应多久开始换商（秒）",
+        "hint": "默认 30 秒；只统计有效首块，心跳不算。超过总预算时以总预算为准。",
+        "type": "number",
+        "scale": 1000,
+        "step": 1
+      },
+      {
+        "key": "firstResponseBudgetMs",
+        "label": "首块等待总预算（秒）",
+        "hint": "默认 180 秒，最多 180 秒。包含原路重试、换商和新商家响应；并非整个任务时长。",
+        "type": "number",
+        "scale": 1000,
+        "step": 1
+      },
+      {
+        "key": "streamStallTimeoutMs",
+        "label": "输出开始后的停顿上限（秒）",
+        "hint": "默认 30 秒。已有内容后连续无进展达到此值则结束，不重播已输出内容。",
+        "type": "number",
+        "scale": 1000,
+        "step": 1
+      },
+      {
+        "key": "sameRouteRetries",
+        "label": "换商前原路重试次数",
+        "hint": "0 不重试，1 重试一次。只用于可恢复的快速失败，不能延长等待预算。",
+        "type": "number",
+        "step": 1
+      },
       {
         "key": "switchOnThrown",
         "label": "传输异常或请求抛错时切换",
@@ -263,7 +287,7 @@ window.__ModuleLoader__.load({
         "key": "maxSwitchesPerCall",
         "label": "单次流调用最多切换次数",
         "type": "number",
-        "hint": "范围 0～6；已经输出内容后的步骤重跑另有固定上限 2 次。",
+        "hint": "范围 0～6；已输出有效内容后不再自动重播。",
         "step": 1,
         "min": 0
       },
@@ -276,40 +300,10 @@ window.__ModuleLoader__.load({
         "min": 0
       },
       {
-        "key": "degradeAfterFailures",
-        "label": "连续失败达到几次后降级",
-        "type": "number",
-        "hint": "",
-        "step": 1,
-        "min": 0
-      },
-      {
-        "key": "degradeCooldownMs",
-        "label": "降级保持时间（毫秒）",
-        "type": "number",
-        "hint": "180000 = 3 分钟。",
-        "step": 30000,
-        "min": 0
-      },
-      {
-        "key": "switchDedupeMs",
-        "label": "并发切换去重窗口（毫秒）",
-        "type": "number",
-        "hint": "窗口内沿用最近一次切换结果。",
-        "step": 500,
-        "min": 0
-      },
-      {
         "key": "fallbackRoutes",
         "label": "备用路由（按顺序）",
         "type": "routes",
         "hint": "每行一个 provider/model；模型名称中可以包含 /。留空表示不使用备用路由。"
-      },
-      {
-        "key": "preferFallbackWhenDegraded",
-        "label": "路由降级后优先使用备用路由",
-        "type": "bool",
-        "hint": "配置备用路由后生效；在下一次失败处理时优先尝试。"
       },
       {
         "key": "autoSwitchOnContextFailure",
@@ -337,7 +331,7 @@ window.__ModuleLoader__.load({
     "note": "用户取消不会触发切换；鉴权、配额等永久性错误会被拦截。上下文换路由使用独立预算。"
   },
   {
-    "title": "5 · 其它",
+    "title": "4 · 其它",
     "open": false,
     "description": "插件启用、站点接入、显示与维护设置。",
     "fields": [
@@ -418,6 +412,7 @@ window.__ModuleLoader__.load({
 ];
 
     const LIMITS = {
+      firstResponseTimeoutMs: [1000, 180000], firstResponseBudgetMs: [1000, 180000], streamStallTimeoutMs: [1000, 600000], sameRouteRetries: [0, 1],
       maxSwitchesPerCall: [0, 6], maxSwitchesPerHour: [0, 500],
       degradeAfterFailures: [1, 50], degradeCooldownMs: [0, 86400000], switchDedupeMs: [0, 60000],
       contextHeadroomRatio: [1, 4], maxContextSwitchesPerHour: [0, 100],
@@ -459,10 +454,10 @@ window.__ModuleLoader__.load({
           ...common,
           type: 'number',
           step: field.step || 1,
-          min: field.min,
-          max: field.max,
-          value: value ?? '',
-          onChange: (event) => onChange(event.target.value),
+          min: field.min / (field.scale || 1),
+          max: field.max / (field.scale || 1),
+          value: value === '' || value == null ? '' : Number(value) / (field.scale || 1),
+          onChange: (event) => onChange(event.target.value === '' ? '' : Number(event.target.value) * (field.scale || 1)),
         });
       } else {
         control = h('input', {

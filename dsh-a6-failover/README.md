@@ -1,4 +1,9 @@
-# A6 换商家 · dsh-a6-failover 0.6.2
+## 0.6.3 设置页更新
+
+- 切换与等待新增：原路首块等待（默认30秒，1～180）、首块总预算（默认180秒，1～180）、输出后停顿（默认30秒，1～600）、原路快速失败重试（0或1次）。保存后对后续请求生效。
+- 解释输入单价额外门槛和最少站点样本数；删除无参数排序分组及已不参与切换的旧降级、去重设置。
+
+# A6 换商家 · dsh-a6-failover 0.6.3
 
 插件监测 DSH 中受管的 A6API 请求，默认匹配名称以 `a6api` 开头的 provider。启动时采用平台默认路由，沿用你在平台设置的选路偏好。健康请求直接发送给平台。
 
@@ -8,7 +13,7 @@
 2. 完全退出 DSH（包括托盘进程），再重新打开。在 DSH 中配置 A6API provider、模型和模型 API 密钥。
 3. 打开设置中的「A6 换商家」，核对版本、启用状态、provider 匹配规则和控制面站点，填写该站点的系统访问令牌和用户 ID 后保存。默认控制面为 `https://a6api.vip`。模型 API 密钥用于模型调用，系统访问令牌用于查询与切换商家。
 
-设置页覆盖值保存在 DSH 数据目录的 `a6-failover/config.json`。点击「清除本地覆盖」可恢复 profile 配置。使用脚本安装后，可从解压目录运行 `node scripts/install.mjs --profile desktop --uninstall` 卸载。本目录是独立插件源码；下载此仓库后，进入 `dsh-a6-failover` 目录执行安装命令。
+设置页覆盖值保存在 DSH 数据目录的 `a6-failover/config.json`。点击「清除本地覆盖」可恢复 profile 配置。使用脚本安装后，可从解压目录运行 `node scripts/install.mjs --profile desktop --uninstall` 卸载。市场用户可通过 [市场索引](./market/index.json) 核对已发布的版本，再在「插件 → 发现」中安装对应版本。
 
 ## 路由策略
 
@@ -42,7 +47,7 @@ $dshDir = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE
 Get-Content (Join-Path $dshDir 'a6-failover/events.jsonl') -Tail 30
 ```
 
-`boot` 事件的 `version` 应为 `0.6.2`。在源码目录运行 `node scripts/self-test.mjs` 可执行本地自检。
+`boot` 事件的 `version` 应为 `0.6.3`。在源码目录运行 `node scripts/self-test.mjs` 可执行本地自检。
 
 ## 许可
 

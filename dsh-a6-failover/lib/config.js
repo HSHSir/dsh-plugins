@@ -219,7 +219,7 @@ export function normalizeConfig(raw = {}) {
     switchOnFinishError: bool(src.switchOnFinishError, DEFAULTS.switchOnFinishError),
     switchOnEmpty: bool(src.switchOnEmpty, DEFAULTS.switchOnEmpty),
     switchOnTruncated: bool(src.switchOnTruncated, DEFAULTS.switchOnTruncated),
-    firstResponseTimeoutMs: num(src.firstResponseTimeoutMs, DEFAULTS.firstResponseTimeoutMs, 1, 30000),
+    firstResponseTimeoutMs: num(src.firstResponseTimeoutMs, DEFAULTS.firstResponseTimeoutMs, 1, 180000),
     firstResponseBudgetMs: num(src.firstResponseBudgetMs, DEFAULTS.firstResponseBudgetMs, 1, 180000),
     streamStallTimeoutMs: num(src.streamStallTimeoutMs, DEFAULTS.streamStallTimeoutMs, 1, 600000),
     sameRouteRetries: num(src.sameRouteRetries, DEFAULTS.sameRouteRetries, 0, 1),
@@ -299,6 +299,10 @@ export function isManagedProvider(cfg, provider) {
 export function defaultsForForm() {
   const d = DEFAULTS;
   return {
+    firstResponseTimeoutMs: d.firstResponseTimeoutMs,
+    firstResponseBudgetMs: d.firstResponseBudgetMs,
+    streamStallTimeoutMs: d.streamStallTimeoutMs,
+    sameRouteRetries: d.sameRouteRetries,
     enabled: d.enabled,
     providerPattern: d.providerPattern,
     providers: [],

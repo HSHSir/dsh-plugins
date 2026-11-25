@@ -4,7 +4,7 @@
 
 | 插件 | 做什么 | 外部依赖 |
 | --- | --- | --- |
-| [dsh-a6-failover](./dsh-a6-failover) | A6 请求故障换商、平台默认与手动智能路由切换（0.6.2） | A6 控制面访问令牌与用户 ID |
+| [dsh-a6-failover](./dsh-a6-failover) | A6 请求故障换商、平台默认与手动智能路由切换（0.6.3） | A6 控制面访问令牌与用户 ID |
 | [dsh-session-progress](./dsh-session-progress) | 会话表头的进度栏：当前步骤、进展条、本回合用时 | 无 |
 
 ## 安装

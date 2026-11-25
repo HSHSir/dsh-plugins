@@ -24,6 +24,7 @@ export const EDITABLE_KEYS = Object.freeze([
   // 延迟与质量门槛
   'latencyRefMs', 'hardP50Ms', 'maxFailRate', 'minSamples',
   // 切换策略
+  'firstResponseTimeoutMs', 'firstResponseBudgetMs', 'streamStallTimeoutMs', 'sameRouteRetries',
   'maxSwitchesPerCall', 'maxSwitchesPerHour', 'degradeAfterFailures', 'degradeCooldownMs', 'switchDedupeMs',
   'switchOnThrown', 'switchOnFinishError', 'switchOnEmpty', 'switchOnTruncated',
   'preferFallbackWhenDegraded', 'fallbackToSmartRouting', 'fallbackRoutes',
@@ -39,6 +40,7 @@ const NUMERIC = new Set([
   'maxEffectiveRatio', 'cacheHitRate', 'officialCacheHitRate', 'merchantCacheHitRate', 'unmeasuredMerchantCacheHitRate',
   'outputToInputRatio', 'outputRatioMinSamples', 'cacheWriteShare', 'maxPriceRatio', 'fxCnyPerUsd',
   'priceWeight', 'reliabilityWeight', 'cacheWeight', 'cacheMeasureMinSamples', 'latencyWeight', 'successWeight', 'latencyRefMs', 'hardP50Ms', 'maxFailRate', 'minSamples',
+  'firstResponseTimeoutMs', 'firstResponseBudgetMs', 'streamStallTimeoutMs', 'sameRouteRetries',
   'maxSwitchesPerCall', 'maxSwitchesPerHour', 'degradeAfterFailures', 'degradeCooldownMs', 'switchDedupeMs',
   'channelCacheTtlMs', 'controlTimeoutMs', 'contextHeadroomRatio', 'maxContextSwitchesPerHour',
 ]);
