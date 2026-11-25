@@ -37,7 +37,7 @@ export const DEFAULTS = Object.freeze({
   /** 流没给 finish 就断了（半路掉线）。 */
   switchOnTruncated: true,
   firstResponseTimeoutMs: 30000,
-  firstResponseBudgetMs: 60000,
+  firstResponseBudgetMs: 180000,
   streamStallTimeoutMs: 30000,
   sameRouteRetries: 1,
 
@@ -220,7 +220,7 @@ export function normalizeConfig(raw = {}) {
     switchOnEmpty: bool(src.switchOnEmpty, DEFAULTS.switchOnEmpty),
     switchOnTruncated: bool(src.switchOnTruncated, DEFAULTS.switchOnTruncated),
     firstResponseTimeoutMs: num(src.firstResponseTimeoutMs, DEFAULTS.firstResponseTimeoutMs, 1, 30000),
-    firstResponseBudgetMs: num(src.firstResponseBudgetMs, DEFAULTS.firstResponseBudgetMs, 1, 60000),
+    firstResponseBudgetMs: num(src.firstResponseBudgetMs, DEFAULTS.firstResponseBudgetMs, 1, 180000),
     streamStallTimeoutMs: num(src.streamStallTimeoutMs, DEFAULTS.streamStallTimeoutMs, 1, 600000),
     sameRouteRetries: num(src.sameRouteRetries, DEFAULTS.sameRouteRetries, 0, 1),
 

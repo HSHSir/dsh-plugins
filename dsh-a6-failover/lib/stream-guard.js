@@ -189,7 +189,7 @@ export async function* guardedStream({
   let retries = 0;
   let requestId;
   const start = performance.now();
-  const totalDeadline = start + (cfg.firstResponseBudgetMs ?? 60000);
+  const totalDeadline = start + (cfg.firstResponseBudgetMs ?? 180000);
   const originalDeadline = Math.min(totalDeadline, start + (cfg.firstResponseTimeoutMs ?? 30000));
   const stallMs = cfg.streamStallTimeoutMs ?? 30000;
 
