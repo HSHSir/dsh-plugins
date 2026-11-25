@@ -1,0 +1,3 @@
+- insert:
+    - id: session-progress
+      name: dsh-session-progress

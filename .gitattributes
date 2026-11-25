@@ -1,0 +1,5 @@
+# 仓库里统一用 LF：插件是给 Node 读的，换行符不该随检出平台变化。
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary

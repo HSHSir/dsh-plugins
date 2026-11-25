@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Session progress",
+    "description": "Shows the current turn's steps, progress and elapsed time in the session header, with a plan when the model keeps one and the turn's activity when it does not."
+  }
+}
