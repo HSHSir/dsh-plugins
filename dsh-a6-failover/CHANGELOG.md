@@ -1,3 +1,63 @@
+## 0.7.1 直连优先，失败自动切代理
+
+- **新增 `connectionMode`**（默认 `direct-first`）：先直连，直连在 `directProbeMs`（默认 1500ms）内连不上就自动切代理。可选 `proxy-first` / `direct-only` / `proxy-only`。
+  - 直连给短探活超时，避免每次都等 10~20 秒才切代理；连得上就一直走直连，不碰代理。
+  - HTTP 4xx/5xx 是站点真的回了，不算「连不上」，不会绕代理。
+  - 修了 `viaProxy` 闭包引用了未声明的 `proxyUrl` 变量（会让所有代理请求 0 秒失败并被包装成 `A6_NETWORK`）。
+- 设置页新增「连接方式」下拉与「直连探活超时」字段；`lib/overrides.js` 同步加入白名单。
+- 实测：`proxy-only` 1.21s OK；`direct-first` 2.38s OK（1.5s 探活失败后切代理）。
+- 修复后的全量测试：self-test 108 项、node --test 38 项全绿，编码检查干净。
+
+## 0.7.0 代理支持 + 切换不再现场拉表
+
+这一版解决「网页明明能打开，插件却一直失败」的根本原因。
+
+- **新增 `proxyUrl`**：A6API 的域名（`main.apisnode.cc`）解析到 **172.80.127.x 私有地址段**，直连必然超时，浏览器能打开是因为走了系统代理。Node 的 fetch 不读系统代理，所以之前所有控制面请求都在连一个够不着的私网 IP。
+  - 用 Node 内置 `http`/`https` 手写 CONNECT 隧道（不依赖 undici，DSH 的 Node 里 import 不到它）。
+  - **CONNECT 之后必须手动 `tls.connect`**：直接把裸 socket 交给 `https.Agent.createConnection`，Agent 会认为「已是 TLS 会话」而跳过握手，明文发到 443 上，边缘节点回 `HTTP 400 Domain Not Configured`——看起来像域名没配，实际是没加密。
+  - 隧道串行化：本地代理解析（verge-mihomo）在同时开多条隧道时会掐掉新连接，25 MB 的表和订阅列表并发会互相搞死。
+- **补全 `proxyUrl` 透传**：`pinChannel` / `unpinChannel` / `tokenPlainKey` 三个函数之前没带这个参数，导致「查 pin 正常、写 pin 必然失败」。
+- **切换只读缓存，绝不现场拉表**：商家表实测 25 MB、15~60 秒。现在 `pickCachedCandidates` 只读本地缓存（毫秒级），表由新增的 `channelsRefreshMs`（默认 30 分钟）后台刷新。
+- **新增 `channelsTimeoutMs`**（默认 90 秒）：商家表专用超时，不再和「查 pin」那种几百字节的请求共用 `controlTimeoutMs`（20 秒）。
+- `planSwitch` 的整体兜底超时改为 `controlTimeoutMs + channelsTimeoutMs`，只防挂死，不再误伤。
+- 实测（真实站点）：预热商家表 25.7s / 73 家 → 切换 **5.81s 成功，pin 到 ch228**。
+
+## 0.6.7 控制面不可用时降级，不再让整轮对话失败
+
+站点整体挂掉（TCP 通、HTTP 全超时）时，插件原本每轮都去试一次切换、失败锁 15 秒、下一轮再试，失败次数一路堆到 36，最后抛 `A6_ROUTE_NOT_READY` 让整轮对话失败。用户看到的就是「处理失败 · 控制面处于冷却期」反复出现。
+
+- **新增控制面熔断**：连续失败超过 `controlUnavailableMs`（默认 **2 分钟**）后整体放弃，不再打扰控制面，直接把请求交给平台默认路由跑完。`0` 关闭（旧行为）。
+- **新增低频探活**：降级期间每 `controlProbeMs`（默认 30 秒）只读探测一次，站点一活过来立刻恢复智能选商，并记 `control-recovered` 事件。
+- **四处放行**（原本都抛 `A6_ROUTE_NOT_READY`）：
+  - `planSwitch` 熔断短路带 `unavailable` 标记，不再去试备用路由；
+  - `beginRequest` 遇到 `unavailable` 只记 `control-degraded` 事件并放行；
+  - `ensurePlatform` 清理固定商家失败时，控制面不可用就放行（残留 pin 交给平台路由处理）；
+  - `restoringAll` / `restorePending` 在控制面不可用时不再拦请求。
+- 冷却期本身也参与熔断判定（冷却只表示「别立刻重试」，熔断才是「整体放弃」）。
+- 实测（死站）：第 1 次 10.6 秒超时 → 第 2 次熔断 → 入口 **2 毫秒**返回放行，不再抛错。
+
+## 0.6.6 按官网真实账单校准
+
+- **修一个静默失效的 bug**：`normalizeWorkload` 不是幂等的——它读配置键 `unmeasuredMerchantCacheHitRate`，却输出短名 `unmeasuredCacheHitRate`，而 `priceModel` 内部会再洗一次，第二次就读不到，把商家缓存假设**静默清成 0**。后果是所有商家都被按「完全无缓存」估价，真实成本高估数倍，且没有任何报错。现在两套键名都认，`outputToInput` 同理。
+- **新增 `officialPriceOverride`**：官网基准价（元/百万 token，`{input, output, cacheRead}`）。实测站点返回的 `official_price` 比 DeepSeek 官网真实账单低一个数量级（站点 ¥0.15 输入 vs 账单折算 ¥1.0 量级），拿站点价当分母会让所有商家都显得贵、门槛误杀合格商家。填了就替换分母，留空仍用站点价。
+- 覆盖值按商家那条报文的单位解释，不篡改 `pricing_currency` / `pricing_unit`，避免 `priceBasis` 判币种冲突。
+- 实测影响（193 条 listing，官网基准改用真实账单校准后）：成本超线淘汰从 8 家降到 **1 家**，真实成本回到 0.22~0.83 的合理区间。
+
+## 0.6.5 选商口径三项修正
+
+- **价格门槛改用商家自己的真实成本**：以前用「官网同等命中率」判门槛，会放进来「标价便宜、缓存读价极低、实际几乎不命中」的商家（实测案例：input 0.44 倍看着达标，按实测 15% 命中率算是官网的 2.59 倍）。现在有本机实测命中率就按真实成本判；**还没实测过的商家仍按标价倍率判**，不会被 `unmeasuredMerchantCacheHitRate=0` 一次打死。
+- **p50 退出打分，只做入选门槛**：`hardP50Ms` 与「取较快一半」继续用 p50，`rankCandidates` 不再读 p50。以前 p50 既筛又算分，等于对历史慢的商家罚两次，还会让「历史上一直很快、此刻很慢」的商家占到不该有的延迟分。
+- **延迟得分改用站点「延迟」列**：新增 `siteLatencyOf()`，优先取 listing 的 `last_test_response_ms`（站点最近一次真实响应耗时），没测过才退回 p50 并标记 `p50-fallback`；本机首块实测够 2 个样本时用实测覆盖，标记 `measured-first-block`。状态页新增「打分用延迟」一行，能看出这个数是站点实测、p50 兜底还是本机实测。
+- 顺带修掉一个旧 bug：`classifyListing` 过去总把 `unmeasuredMerchantCacheHitRate` 当成实测值传给 `priceModel`，使 `merchantCacheHitMeasured` 误报为 true。现在命中率是三态（实测 / 配置写死 / 未测），未测时交给 `priceModel` 自己兜底。
+- 实测影响（193 条 listing、本机 6 家已有实测）：门槛从「全部放行」变成淘汰 66 家成本超线；channel 4137 由第 1 名变为淘汰，7074 由第 8 名升到第 3 名。
+
+## 0.6.4 接管站点已有的固定商家
+
+- 新增 `takeOverExistingPin`（设置页「2 · 商家筛选与打分」→「接管站点已有的固定商家」，默认关闭）。关闭时行为与 0.6.3 一致：站点上出现非本插件设置的固定商家就保留它，本次选商以 `A6_ROUTE_NOT_READY` 结束。
+- 开启后：先按价格与质量门槛选候选。选出更合适的商家 → 解除外部固定、改绑候选，失败则把原固定按原 `fallback_to_smart_routing` 还原，并记 `pin-takeover` / `pin-takeover-rollback` 事件；原来那家就是最优 → 只借用（`adopt`），不改站点设置，也不写归属记录，因此空闲时不会替它 unpin。
+- 新增事件 `pin-preserved`（保留外部固定时记下渠道与原因）、`pin-adopted`。
+- 注意：被解除的外部固定不会在插件空闲后自动恢复，这是接管的代价。
+
 ## 0.6.3 设置页更新
 
 - 切换与等待新增：原路首块等待（默认30秒，1～180）、首块总预算（默认180秒，1～180）、输出后停顿（默认30秒，1～600）、原路快速失败重试（0或1次）。保存后对后续请求生效。

@@ -40,12 +40,20 @@ function toMicros(value) {
 
 const clampHit = (value) => Math.min(1, Math.max(0, value));
 
-/** 把配置洗成一个合法的用量配比。 */
+/**
+ * 把配置洗成一个合法的用量配比。
+ *
+ * **必须幂等**：输入既可能是原始配置（键名 unmeasuredMerchantCacheHitRate / outputToInputRatio），
+ * 也可能是上一次本函数的输出（键名 unmeasuredCacheHitRate / outputToInput）。priceModel 内部
+ * 会再洗一次，如果只认前一套键名，第二次就会把 0.2 读成 NaN 再退回 0——缓存假设被静默清零，
+ * 真实成本被高估好几倍，而且没有任何报错。
+ */
 export function normalizeWorkload(cfg = {}) {
   const hit = numericField(cfg.cacheHitRate);
   const officialHit = numericField(cfg.officialCacheHitRate);
   const merchantHit = numericField(cfg.merchantCacheHitRate);
-  const unmeasuredHit = numericField(cfg.unmeasuredMerchantCacheHitRate);
+  // 两套键名都认：输出用的是短名，配置用的是长名。
+  const unmeasuredHit = numericField(cfg.unmeasuredMerchantCacheHitRate ?? cfg.unmeasuredCacheHitRate);
   const out = numericField(cfg.outputToInputRatio ?? cfg.outputToInput);
   const write = numericField(cfg.cacheWriteShare);
   const fx = numericField(cfg.fxCnyPerUsd ?? cfg.fx);

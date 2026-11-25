@@ -56,6 +56,16 @@ export const DEFAULTS = Object.freeze({
    * 失败只重试、不再动控制面。
    */
   switchDedupeMs: 2000,
+  /**
+   * 控制面连续失败多久之后整体熔断。默认 2 分钟。
+   *
+   * 站点整体挂掉时（TCP 通、HTTP 全超时），每轮请求都进来试一次切换、失败锁 15 秒、
+   * 下一轮再试，失败次数一路堆叠，用户看到「本轮运行失败」反复出现。超过这个时长就
+   * 停止打扰控制面，直接把请求交给平台默认路由。0 = 关闭熔断（旧行为）。
+   */
+  controlUnavailableMs: 120000,
+  /** 熔断期间多久探活一次。默认 30 秒，最小 5 秒。 */
+  controlProbeMs: 30000,
 
   // ---- 备用路由：控制面不可用（没网、没凭据、站点改版）时的第二道防线 ----
   /** [{ provider: 'a6api-a6-2', model: 'deepseek-v4.1-flash-1017' }] */
@@ -76,6 +86,18 @@ export const DEFAULTS = Object.freeze({
   // ---- 商家选择 ----
   /** 显式允许平台自主选商家，可能超出插件价格线。 */
   fallbackToSmartRouting: false,
+  /**
+   * 站点上已有**不是本插件写的**固定商家时，是否接管它。
+   *
+   * 默认 false：保留别人的 pin（可能是用户在控制台手动固定的，或平台的策略），
+   * 本插件这一步直接放弃并报 A6_ROUTE_NOT_READY。
+   *
+   * 打开后：先按插件门槛选出候选 ——
+   *   · 有更合适的候选 → 解除外部固定，改 pin 候选，失败则把原固定恢复回去；
+   *   · 只有原来那一家合格 → 直接认领（记进 ownedPins），不为换而换。
+   * 代价：插件用完会 unpin，那条外部固定不会自动回来。
+   */
+  takeOverExistingPin: false,
   /** 渠道列表缓存时长（一次拉取很大，别每回都拉）。 */
   channelCacheTtlMs: 900000,
   /** 渠道响应最大字节数，超了就当拿不到（保护内存）。 */
@@ -111,8 +133,54 @@ export const DEFAULTS = Object.freeze({
   outputToInputRatio: 0.03,
   /** 缓存写入占比，默认 0（DSH 侧不单独计这一档）。 */
   cacheWriteShare: 0,
+  /**
+   * 控制面请求走的 HTTP 代理，例如 http://127.0.0.1:7897。
+   *
+   * 为什么必须有：A6API 的域名（main.apisnode.cc）解析到私有地址段 172.80.127.x，
+   * 直连必然超时；浏览器能打开是因为走了系统代理。Node 的 fetch 不读系统代理，
+   * 所以不配这个就会出现「网页明明能开、插件一直报网络失败」。
+   *
+   * 留空时依次读环境变量 HTTPS_PROXY / HTTP_PROXY / ALL_PROXY；都没有才直连。
+   *
+   * 连接策略（connectionMode）：
+   *   direct-first（默认）—— 先直连，直连在 directProbeMs 内没连上就自动切代理。
+   *                          直连够快就一直用直连，不碰代理。
+   *   proxy-first         —— 先代理，失败再试直连（旧行为）。
+   *   direct-only / proxy-only —— 只用一种。
+   */
+  proxyUrl: '',
+  connectionMode: 'direct-first',
+  /** direct-first 下直连的探活超时，默认 1500ms。够快才不算「连不上」。 */
+  directProbeMs: 1500,
+  /**
+   * 商家表（/api/marketplace/channels）的超时。
+   *
+   * 那份响应实测约 25 MB，站慢时要 60 秒才下完。它跟「查 pin」那种几百字节的请求
+   * 完全不是一个量级，共用一个 12~20 秒的超时会导致每次切换都拉不到候选、必然失败。
+   */
+  channelsTimeoutMs: 90000,
+  /**
+   * 后台刷新商家表的间隔。默认 30 分钟。
+   *
+   * 切换只读缓存、绝不现场拉表（25 MB，站慢时一分钟），所以这张表的
+   * 新鲜度完全由这个定时器负责。调小 = 候选更新更及时、后台带宽占用更多。
+   */
+  channelsRefreshMs: 1800000,
   /** 站点没给缓存价时是否按输入价保守估算，默认拒绝缺价候选。 */
   assumeMissingCacheAsInput: false,
+  /**
+   * 官网基准价（元 / 百万 token），填了就用它替换站点返回的 official_price。
+   *
+   * 为什么要这个：站点 official_price 实测比 DeepSeek 官网真实账单低一个数量级
+   * （站点给 ¥0.15 输入，真实账单按 98% 命中折算是 ¥1.0 量级）。拿站点价当分母，
+   * 所有商家都会显得贵好几倍，门槛会把合格商家误杀。
+   *
+   * 形如 { input, output, cacheRead }，单位元/百万 token；留空则用站点提供的 official_price。
+   * 建议先用真实账单校准：命中率 h、输出占比 c 时，
+   *   每百万 = h*cacheRead + (1-h)*input + c*output
+   * 让它约等于账单上的「元/百万」。
+   */
+  officialPriceOverride: null,
   /** 美元→人民币，只用于把单价显示成人看得懂的数（不参与倍率判定）。 */
   fxCnyPerUsd: 7.2,
   /** 站点 p50 超过这个值直接不要。 */
@@ -182,6 +250,43 @@ function bool(value, fallback) {
   return typeof value === 'boolean' ? value : fallback;
 }
 
+
+function connectionModeOf(value) {
+  const text = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return ['direct-first', 'proxy-first', 'direct-only', 'proxy-only'].includes(text) ? text : 'direct-first';
+}
+
+/**
+ * 代理地址：只接受 http(s):// 开头的合法 URL，其余一律当作「未配置」。
+ * 允许 host 带端口；不校验可达性（那是运行时的事）。
+ */
+function proxyOf(value) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text) return '';
+  if (!/^https?:\/\//i.test(text)) return '';
+  try {
+    const url = new URL(text);
+    return url.hostname ? text : '';
+  } catch { return ''; }
+}
+
+/**
+ * 官网基准价覆盖：{ input, output, cacheRead }，单位元/百万 token。
+ * 只接受正数且至少给了 input；缺项按 0 处理（缓存价常被设成极低值，允许显式写 0）。
+ */
+function officialOverride(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const pick = (key) => {
+    const n = Number(value[key]);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  };
+  const input = pick('input');
+  const output = pick('output');
+  const cacheRead = pick('cacheRead');
+  if (!(input > 0)) return null;
+  return { input, output: output ?? input * 4, cacheRead: cacheRead ?? input * 0.02 };
+}
+
 function str(value, fallback = '') {
   return typeof value === 'string' ? value.trim() : fallback;
 }
@@ -229,6 +334,8 @@ export function normalizeConfig(raw = {}) {
     degradeAfterFailures: num(src.degradeAfterFailures, DEFAULTS.degradeAfterFailures, 1, 50),
     degradeCooldownMs: num(src.degradeCooldownMs, DEFAULTS.degradeCooldownMs, 0, 24 * 3600 * 1000),
     switchDedupeMs: num(src.switchDedupeMs, DEFAULTS.switchDedupeMs, 0, 60000),
+    controlUnavailableMs: num(src.controlUnavailableMs, DEFAULTS.controlUnavailableMs, 0, 3600000),
+    controlProbeMs: num(src.controlProbeMs, DEFAULTS.controlProbeMs, 5000, 600000),
 
     fallbackRoutes: routes
       .filter((row) => row && typeof row === 'object')
@@ -244,6 +351,7 @@ export function normalizeConfig(raw = {}) {
       .filter((row) => row.provider && row.model),
 
     fallbackToSmartRouting: bool(src.fallbackToSmartRouting, DEFAULTS.fallbackToSmartRouting),
+    takeOverExistingPin: bool(src.takeOverExistingPin, DEFAULTS.takeOverExistingPin),
     channelCacheTtlMs: num(src.channelCacheTtlMs, DEFAULTS.channelCacheTtlMs, 0),
     maxChannelsBytes: num(src.maxChannelsBytes, DEFAULTS.maxChannelsBytes, 1024),
     maxPriceRatio: num(src.maxPriceRatio, DEFAULTS.maxPriceRatio, 0),
@@ -261,6 +369,12 @@ export function normalizeConfig(raw = {}) {
     outputToInputRatio: num(src.outputToInputRatio, DEFAULTS.outputToInputRatio, 0, 100),
     cacheWriteShare: num(src.cacheWriteShare, DEFAULTS.cacheWriteShare, 0, 1),
     assumeMissingCacheAsInput: bool(src.assumeMissingCacheAsInput, DEFAULTS.assumeMissingCacheAsInput),
+    proxyUrl: proxyOf(src.proxyUrl),
+    connectionMode: connectionModeOf(src.connectionMode),
+    directProbeMs: num(src.directProbeMs, DEFAULTS.directProbeMs, 200, 30000),
+    channelsTimeoutMs: num(src.channelsTimeoutMs, DEFAULTS.channelsTimeoutMs, 5000, 600000),
+    channelsRefreshMs: num(src.channelsRefreshMs, DEFAULTS.channelsRefreshMs, 60000, 86400000),
+    officialPriceOverride: officialOverride(src.officialPriceOverride),
     fxCnyPerUsd: num(src.fxCnyPerUsd, DEFAULTS.fxCnyPerUsd, 0.01, 100),
     hardP50Ms: num(src.hardP50Ms, DEFAULTS.hardP50Ms, 1),
     latencyRefMs: num(src.latencyRefMs, DEFAULTS.latencyRefMs, 1),
@@ -317,11 +431,14 @@ export function defaultsForForm() {
     degradeAfterFailures: d.degradeAfterFailures,
     degradeCooldownMs: d.degradeCooldownMs,
     switchDedupeMs: d.switchDedupeMs,
+    controlUnavailableMs: d.controlUnavailableMs,
+    controlProbeMs: d.controlProbeMs,
     preferFallbackWhenDegraded: d.preferFallbackWhenDegraded,
     autoSwitchOnContextFailure: d.autoSwitchOnContextFailure,
     contextHeadroomRatio: d.contextHeadroomRatio,
     maxContextSwitchesPerHour: d.maxContextSwitchesPerHour,
     fallbackToSmartRouting: d.fallbackToSmartRouting,
+    takeOverExistingPin: d.takeOverExistingPin,
     channelCacheTtlMs: d.channelCacheTtlMs,
     maxEffectiveRatio: d.maxEffectiveRatio,
     cacheHitRate: d.cacheHitRate,
@@ -331,6 +448,12 @@ export function defaultsForForm() {
     outputToInputRatio: d.outputToInputRatio,
     cacheWriteShare: d.cacheWriteShare,
     assumeMissingCacheAsInput: d.assumeMissingCacheAsInput,
+    proxyUrl: d.proxyUrl,
+    connectionMode: d.connectionMode,
+    directProbeMs: d.directProbeMs,
+    channelsTimeoutMs: d.channelsTimeoutMs,
+    channelsRefreshMs: d.channelsRefreshMs,
+    officialPriceOverride: d.officialPriceOverride,
     fxCnyPerUsd: d.fxCnyPerUsd,
     maxPriceRatio: d.maxPriceRatio,
     hardP50Ms: d.hardP50Ms,

@@ -61,6 +61,22 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
   const subscriptions = new Map();
   let pendingMutations = 0;
   const controlBlockedUntil = new Map();
+  /**
+   * 控制面不可用熔断。
+   *
+   * 站点整体挂掉时（TCP 通、HTTP 全超时），每轮请求都会进来试一次切换，失败就锁 15 秒，
+   * 下一次又失败。日志里 fails 从 17 一路堆到 36，冷却期越滚越长，用户看到的是「本轮运行失败」
+   * 反复出现——插件在死站上白转。
+   *
+   * 这里记「首次失败时刻」，连续失败超过 controlUnavailableMs（默认 2 分钟）就整体熔断：
+   * 该账号下的切换全部短路返回 unavailable，直接把请求交给平台默认路由，不再打扰控制面。
+   * 探测由定时器低频进行，一旦成功立刻解除熔断，恢复智能选商。
+   */
+  const controlFailureSince = new Map();
+  const probeTimers = new Map();
+  /** 后台刷新商家表的定时器。 */
+  let channelsTimer = null;
+  let channelsKick = null;
   const lifetime = new AbortController();
   // Persisted candidates were filtered and scored under a specific configuration.
   // 报价线程只拿这份子集算分：漏一个键，线程里就悄悄退回默认值（缓存命中率 0.9 就是这么漏掉的）。
@@ -71,6 +87,91 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
     'cacheMeasureMinSamples', 'latencyWeight', 'successWeight', 'latencyRefMs'];
   let quoteConfig = Object.fromEntries(quoteKeys.map((key) => [key, cfg[key]]));
   let selectionKey = JSON.stringify([3, ...Object.values(quoteConfig)]);
+
+  /** 该账号是否还在「刚失败过、别立刻再打」的冷却窗口内。 */
+  function isCoolingDown(account) {
+    return Date.now() < (controlBlockedUntil.get(account) || 0);
+  }
+
+  /** provider 所属账号此刻是否已不可用（熔断中或在冷却期）。 */
+  function controlDeadFor(provider) {
+    const site = resolveSite(provider);
+    if (!site.ok) return false;
+    const account = JSON.stringify([site.controlBase, String(site.userId)]);
+    return controlUnavailable(account) || isCoolingDown(account);
+  }
+
+  /** 该账号是否已熔断（连续失败超过 controlUnavailableMs）。 */
+  function controlUnavailable(account) {
+    const since = controlFailureSince.get(account);
+    if (!since) return false;
+    const limit = Number(cfg.controlUnavailableMs) || 0;
+    if (!(limit > 0)) return false;
+    return Date.now() - since >= limit;
+  }
+
+  /** 记一次控制面失败；首次失败记时间，之后一直累计（连续失败才算熔断）。 */
+  function noteControlFailure(account) {
+    if (!controlFailureSince.has(account)) controlFailureSince.set(account, Date.now());
+    scheduleProbe(account);
+  }
+
+  /** 成功一次就清零并撤销探测定时器。 */
+  function noteControlOk(account) {
+    controlFailureSince.delete(account);
+    const timer = probeTimers.get(account);
+    if (timer) { clearTimeout(timer); probeTimers.delete(account); }
+  }
+
+  /**
+   * 熔断期间低频探活：不改状态、不写站点，只打一个只读接口确认站是否活过来。
+   * 已在计时器里的账号直接返回，避免每个请求都排一个定时器。
+   */
+  function scheduleProbe(account) {
+    if (probeTimers.has(account) || lifetime.signal.aborted) return;
+    const interval = Math.max(Number(cfg.controlProbeMs) || 30000, 5000);
+    const timer = setTimeout(async () => {
+      probeTimers.delete(account);
+      if (lifetime.signal.aborted) return;
+      let alive = false;
+      try { alive = (await controlProbe(account)) === true; } catch { alive = false; }
+      if (lifetime.signal.aborted) return;
+      if (alive) {
+        noteControlOk(account);
+        store.logEvent({ type: 'control-recovered', account });
+      } else if (controlFailureSince.has(account)) {
+        scheduleProbe(account);
+      }
+    }, interval);
+    timer.unref?.();
+    probeTimers.set(account, timer);
+  }
+
+  /**
+   * 探活：只读一次 pin 列表，确认控制面是否真的通了。
+   * 不用 status 之类的公开接口——那种页站在边缘上仍可能返回 200，探不出回源已死。
+   * account 是 JSON.stringify([controlBase, userId])，这里还原成站点参数。
+   */
+  async function controlProbe(account) {
+    let controlBase = '';
+    let userId = '';
+    try { [controlBase, userId] = JSON.parse(account); } catch { return false; }
+    const site = resolveSite(`a6api-${userId}`) || {};
+    const target = {
+      controlBase,
+      userId,
+      accessToken: site.accessToken,
+      tokenIdOverride: site.tokenIdOverride,
+      proxyUrl: cfg.proxyUrl || '',
+      connectionMode: cfg.connectionMode || 'direct-first',
+      directProbeMs: cfg.directProbeMs || 1500,
+    };
+    if (!target.accessToken) return false;
+    try {
+      const rows = await listPins({ ...target, timeoutMs: Math.min(Number(cfg.controlTimeoutMs) || 12000, 10000) });
+      return Array.isArray(rows);
+    } catch { return false; }
+  }
 
   /** 只把近期确认、且禁用站点智能兜底的 pin 作为本地采样依据。 */
   function activeChannel(provider, model) {
@@ -106,6 +207,10 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
       tokenIdOverride: Number(override.tokenId || 0) || 0,
       tokenName: String(override.tokenName || tokenLabelFromProvider(provider) || ''),
       apiKey: String(override.apiKey || ''),
+      // 控制面全部请求都走这个代理：A6API 域名解析到私有地址段，直连必然超时。
+      proxyUrl: cfg.proxyUrl || '',
+      connectionMode: cfg.connectionMode || 'direct-first',
+      directProbeMs: cfg.directProbeMs || 1500,
     };
   }
 
@@ -141,7 +246,7 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
     if (!controlBase) return { ok: false, reason: '控制面必须是 HTTPS 站点地址' };
     const credentials = credentialsFor(controlBase);
     if (!credentials) return { ok: false, reason: `没有 ${controlBase} 的控制台凭据` };
-    return { ok: true, controlBase, ...credentials, tokenIdOverride: 0, tokenName: '', apiKey: '' };
+    return { ok: true, controlBase, ...credentials, tokenIdOverride: 0, tokenName: '', apiKey: '', proxyUrl: cfg.proxyUrl || '', connectionMode: cfg.connectionMode || 'direct-first', directProbeMs: cfg.directProbeMs || 1500 };
   }
 
   /** 把 DSH 的 provider 对回站点的 token_id。 */
@@ -209,6 +314,8 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
       return {
         channelId: Number(row.channel_id || row.channelId || 0),
         channelName: String(row.channel_name || ''),
+        // 接管外部固定时要把这家的原设置原样还原，不能自己改它的兜底语义。
+        fallbackToSmartRouting: row.fallback_to_smart_routing === true || row.fallback_to_smart_routing === 1,
         strict: row.status === 'active' && row.route_effective === true
           && (row.fallback_to_smart_routing === false || row.fallback_to_smart_routing === 0),
       };
@@ -240,7 +347,9 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
     const existing = subscriptions.get(account);
     if (existing && (!force || !existing.done) && Date.now() < existing.until) return existing.task;
     const entry = { until: Date.now() + 60000, done: false };
-    entry.task = fetchSubscriptions({ ...site, timeoutMs: Math.min(cfg.controlTimeoutMs, 2000),
+    // 这里原本只给 2000ms。订阅列表虽不大，但它和商家表是并发拉的，
+    // 站慢时 2 秒连 TLS 握手都不够，会一直返回 null（于是缓存率永远缺数据）。
+    entry.task = fetchSubscriptions({ ...site, timeoutMs: Math.max(Number(cfg.controlTimeoutMs) || 20000, 10000),
       signal: lifetime.signal, maxBytes: Math.min(cfg.maxChannelsBytes, 16 * 1024 * 1024),
     }).then(cacheRatesFromSubscriptions).catch(() => null).then((rates) => {
       entry.done = true;
@@ -252,11 +361,24 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
   }
 
   async function refreshCandidates(site, model, account, force, quoteConfig, selectionKey) {
-    const [text, cacheRates] = await Promise.all([
-      fetchChannels({ ...site, modelName: model, timeoutMs: Math.min(cfg.controlTimeoutMs, 30000),
-        signal: lifetime.signal, maxBytes: cfg.maxChannelsBytes, rawJson: true }),
-      subscriptionRates(site, account, force),
-    ]);
+    /*
+     * 串行拉，不并发。
+     *
+     * 商家表有 25 MB，走的是同一条本地代理连接；和订阅列表并发时两者互相抢带宽，
+     * 实测「单独 29 秒」会变成「90 秒还不完」。订阅列表本来就小、还带 5 分钟缓存，
+     * 先等它（通常命中缓存，几毫秒）再拉大表，总耗时反而更短也更稳。
+     */
+    const cacheRates = await subscriptionRates(site, account, force);
+    const text = await fetchChannels({
+      ...site,
+      modelName: model,
+      // 商家表实测 25 MB：站慢时要 30~60 秒，必须给独立的宽超时，
+      // 不能和「查 pin」那种小请求共用 controlTimeoutMs。
+      timeoutMs: Math.max(Number(cfg.channelsTimeoutMs) || 90000, 15000),
+      signal: lifetime.signal,
+      maxBytes: cfg.maxChannelsBytes,
+      rawJson: true,
+    });
     if (lifetime.signal.aborted) return [];
     const worker = new Worker(new URL('./quote-worker.js', import.meta.url), {
       execArgv: [],
@@ -284,7 +406,49 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
     return trimmed;
   }
 
-  async function loadCandidates(site, model, excludeChannels = new Set(), { force = false, signal, allowStale = false } = {}) {
+  /**
+   * 取候选商家：**只读缓存，绝不现场拉表**。
+   *
+   * 商家表有 25 MB，站慢时要 15~60 秒，而且走本地代理时并发会互相抢带宽
+   * （实测单独 29 秒、和订阅列表并发就 90 秒拉不完）。切换是热路径，
+   * 卡在这上面等于整个插件不可用。
+   *
+   * 所以这里只做两件事：
+   *   1) 缓存还能用 → 立刻返回（毫秒级）；
+   *   2) 缓存不可用 → 起一个后台刷新，同时明确告诉调用方「现在没法选」，
+   *      由上层降级到平台默认路由。下次请求时缓存大概率已经有了。
+   *
+   * @returns {{ rows: Array, stale: boolean, refreshing: boolean }}
+   */
+  function pickCachedCandidates(site, model, excludeChannels = new Set()) {
+    const account = identity(site);
+    const cached = store.getChannels(site.controlBase, model);
+    const compatible = cached?.selectionKey === selectionKey && cached.account === account;
+    const age = Date.now() - (cached?.at || 0);
+    const filter = (rows) => {
+      const known = badChannels(site.controlBase, model);
+      const measured = store.usageRates(model, site.controlBase);
+      const stats = store.channelStats(model, site.controlBase);
+      return rankFastestHalf(rows.filter((row) => !excludeChannels.has(row.channelId) && !known.has(row.channelId))
+        .map((row) => refreshCandidateCache(row, cfg, measured, Date.now(), stats)), cfg);
+    };
+    // 表过期/不兼容时先触发后台刷新（不 await），再用旧表顶上。
+    const fresh = compatible && age < Math.min(cfg.channelCacheTtlMs, QUOTE_MAX_AGE_MS);
+    const refreshing = ensureRefresh(site, model, account, !fresh);
+    if (compatible && age < QUOTE_MAX_AGE_MS) {
+      const rows = filter(cached.candidates);
+      if (rows.length) return { rows, stale: !fresh, refreshing };
+    }
+    return { rows: [], stale: true, refreshing };
+  }
+
+  /**
+   * 显式刷新并等待结果。
+   *
+   * 只有「设置页点重新拉取」这种用户主动、能等、也知道要等几十秒的场景才用它。
+   * 请求/切换路径一律走 pickCachedCandidates，绝不调这个。
+   */
+  async function loadCandidates(site, model, excludeChannels = new Set(), { force = false, signal } = {}) {
     const account = identity(site);
     const key = `${account}|${model}|${selectionKey}`;
     const cached = store.getChannels(site.controlBase, model);
@@ -298,18 +462,61 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
         .map((row) => refreshCandidateCache(row, cfg, measured, Date.now(), stats)), cfg);
     };
     if (!force && compatible && age < Math.min(cfg.channelCacheTtlMs, QUOTE_MAX_AGE_MS)) return filter(cached.candidates);
+    // 同一个 key 只跑一份刷新；已有的那份直接复用（不要另起，也不要抛 A6_BUSY）。
     let task = candidateLoads.get(key);
     if (!task && candidateLoads.size < 2 && !lifetime.signal.aborted) {
       task = refreshCandidates(site, model, account, force, quoteConfig, selectionKey).finally(() => candidateLoads.delete(key));
       candidateLoads.set(key, task);
       task.catch(() => {});
     }
-    if (!force && allowStale && compatible && age < QUOTE_MAX_AGE_MS) {
-      const available = filter(cached.candidates);
-      if (available.length) return available;
+    if (!task) {
+      // 名额被别人占了（最多 2 个并发），别再排队；旧表能用就先用。
+      if (compatible && age < QUOTE_MAX_AGE_MS) return filter(cached.candidates);
+      throw new A6Error('商家列表正在刷新，请稍后重试', { code: 'A6_BUSY' });
     }
-    if (!task) throw new A6Error('商家列表正在刷新，请稍后重试', { code: 'A6_BUSY' });
     return filter(await waitFor(task, signal));
+  }
+
+  /** 起一个后台刷新（同一个 key 只跑一份），立刻返回是否已在刷新。 */
+  function ensureRefresh(site, model, account, needed) {
+    const key = `${account}|${model}|${selectionKey}`;
+    if (candidateLoads.has(key)) return true;
+    if (!needed || candidateLoads.size >= 2 || lifetime.signal.aborted) return false;
+    const task = refreshCandidates(site, model, account, true, quoteConfig, selectionKey)
+      .then((rows) => {
+        store.logEvent({ type: 'channels-refreshed', model, count: rows.length });
+        return rows;
+      })
+      .catch((error) => {
+        store.logEvent({ type: 'channels-refresh-failed', model, reason: error?.code || error?.message || '未知' });
+        return [];
+      })
+      .finally(() => candidateLoads.delete(key));
+    candidateLoads.set(key, task);
+    task.catch(() => {});
+    return true;
+  }
+
+  /**
+   * 后台定时刷新所有已知模型的商家表。
+   * 切换侧完全不依赖它：它慢、它失败，都不影响请求继续跑。
+   */
+  function startChannelsRefresh() {
+    const interval = Math.max(Number(cfg.channelsRefreshMs) || 1800000, 60000);
+    const tick = async () => {
+      if (lifetime.signal.aborted) return;
+      for (const [base, byModel] of Object.entries(store.allChannels?.() || {})) {
+        for (const model of Object.keys(byModel || {})) {
+          if (lifetime.signal.aborted) return;
+          const site = resolveSiteByBase(base);
+          if (!site.ok) continue;
+          ensureRefresh(site, model, identity(site), true);
+        }
+      }
+    };
+    const timer = setInterval(() => { tick().catch(() => {}); }, interval);
+    timer.unref?.();
+    channelsTimer = timer;
   }
 
   function waitFor(task, signal) {
@@ -340,6 +547,8 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
    * @returns {{ ok: boolean, provider?: string, model?: string, mode?: string, channelId?: number, channelName?: string, reason?: string }}
    */
   const owned = new Map(Object.entries(store.ownedPins()));
+  /** 已经为「保留外部固定」记过事件的 route|channel，避免每次请求都往日志里刷同一条。 */
+  const preservedPins = new Set();
   const pendingRestore = new Set(owned.keys());
   const sites = new Map();
   const generations = new Map();
@@ -411,7 +620,15 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
     } catch {
       sweepFailures.add(provider);
       retrySweeps();
-      throw new A6Error('平台默认路由待恢复：尚未确认该令牌全部模型已解除固定商家', { code: 'A6_ROUTE_NOT_READY' });
+      // 清理固定商家本身要打控制面。站整体挂掉时这一步必然失败，
+      // 但「清不掉」不等于「这轮请求不能发」——把那轮的固定商家留给平台默认路由处理即可。
+      // 只有控制面还活着（清不掉是别的原因）时才继续拦，避免带着残留 pin 跑错商家。
+      // 控制面还活着（清不掉是别的原因）时才继续拦，避免带着残留 pin 跑错商家。
+      if (!controlDeadFor(provider)) {
+        throw new A6Error('平台默认路由待恢复：尚未确认该令牌全部模型已解除固定商家', { code: 'A6_ROUTE_NOT_READY' });
+      }
+      store.logEvent({ type: 'control-degraded', provider, model: '', reason: '清理固定商家失败，控制面不可用，放行平台默认路由' });
+      return;
     }
   }
 
@@ -463,8 +680,11 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
       const rate = Number.isFinite(cache?.rate) ? cache.rate : row?.cacheRate24h;
       return { ...(row || {}), provider: r.provider, model: r.model, active: r.active, mode,
         cacheRate: rate ?? null, cacheSource: Number.isFinite(cache?.rate) ? 'measured' : row?.cacheSource,
+        // p50 只表示门槛口径；打分用的是 siteLatencyMs（站点最近实测，没有则 p50 兜底）。
         p50Ms: measured?.latencySamples >= 2 ? measured.p50Ms : row?.realP50Ms ?? null,
-        latencySource: measured?.latencySamples >= 2 ? 'measured' : row?.latencySource };
+        latencySource: measured?.latencySamples >= 2 ? 'measured' : row?.latencySource,
+        siteLatencyMs: row?.siteLatencyMs ?? null,
+        siteLatencyOrigin: row?.siteLatencyOrigin ?? 'none' };
     });
     const merchants = [...owned.entries()].flatMap(([key, claim]) => {
       const row = lastSwitch.get(key);
@@ -545,8 +765,7 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
       && (!site.tokenIdOverride || site.tokenIdOverride === row.tokenId));
   }
 
-  async function beginRequest(provider, model, signal) {
-    signal?.throwIfAborted();
+  async function beginRequest(provider, model, signal, { waitForChannels = false } = {}) {    signal?.throwIfAborted();
     lifetime.signal.throwIfAborted();
     stopIdleTimer();
     const route = remember(provider, model);
@@ -565,16 +784,32 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
       return idle();
     }
     try {
-      if (restoringAll) throw new A6Error('正在恢复平台默认策略', { code: 'A6_ROUTE_NOT_READY' });
+      // 控制面不可用时（熔断）一律放行：这轮请求交给平台默认路由跑完，
+      // 比让整轮对话失败更有用。恢复由探活负责，站点一活过来就重新接管。
+      const deadControl = controlDeadFor(provider);
+      if (restoringAll && !deadControl) throw new A6Error('正在恢复平台默认策略', { code: 'A6_ROUTE_NOT_READY' });
       managedNames.add(provider);
-      await waitFor(ensurePlatform(provider), signal);
-      if (affected(provider, model)) {
-        await waitFor(Promise.resolve(restorePending()), signal);
-        if (affected(provider, model)) throw new A6Error('平台默认路由待恢复', { code: 'A6_ROUTE_NOT_READY' });
+      if (!deadControl) {
+        await waitFor(ensurePlatform(provider), signal);
+        if (affected(provider, model)) {
+          await waitFor(Promise.resolve(restorePending()), signal);
+          if (affected(provider, model) && !controlDeadFor(provider)) {
+            throw new A6Error('平台默认路由待恢复', { code: 'A6_ROUTE_NOT_READY' });
+          }
+        }
       }
       if (manual && !activeChannel(provider, model)) {
-        const result = await planSwitch({ provider, model, signal, initial: true });
-        if (!result.ok) throw new A6Error(result.reason, { code: 'A6_ROUTE_NOT_READY' });
+        const result = await planSwitch({ provider, model, signal, initial: true, waitForChannels });
+        if (!result.ok) {
+          // 熔断/冷却意味着「控制面此刻不可用」，不是「这轮请求不该发」。
+          // 抛错会让整轮对话失败；直接放行，让平台默认路由把这轮跑完。
+          // 恢复由探活负责，站点一活过来就重新接管选商。
+          if (result.unavailable) {
+            store.logEvent({ type: 'control-degraded', provider, model, reason: result.reason });
+          } else {
+            throw new A6Error(result.reason, { code: 'A6_ROUTE_NOT_READY' });
+          }
+        }
       }
       signal?.throwIfAborted();
       return release;
@@ -603,7 +838,7 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
   }
 
   async function mutate({ provider, model, site, tokenId, key, failedChannelId, failedChannels,
-    failedGeneration, failure, initial, signal, epoch }) {
+    failedGeneration, failure, initial, signal, epoch, callerSignal, waitForChannels = false }) {
     if (!initial && failedGeneration < platformGeneration) return { ok: false, reason: '请求早于手动恢复平台策略' };
     const previous = lastSwitch.get(key);
     if (previous?.attribution && (initial || (failedGeneration !== undefined && failedGeneration < generations.get(key)))
@@ -613,35 +848,100 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
     if (pendingRestore.has(key) || epoch !== policyEpoch) return { ok: false, reason: '正在恢复平台默认策略' };
     const pinned = await currentPin(site, tokenId, model, { signal });
     const claim = owned.get(key);
-    if (pinned && (!claim || !pinned.strict || pinned.channelId !== claim.channelId)) {
+    const ours = Boolean(pinned && claim && pinned.strict && pinned.channelId === claim.channelId);
+    /** 站点上一条不是本插件写的固定商家：用户手动固定的，或平台策略留下的。 */
+    const external = pinned && !ours ? pinned : null;
+    if (external && !cfg.takeOverExistingPin) {
       if (claim) { journal(key, null); lastSwitch.delete(key); generations.set(key, ++serial); }
       remember(provider, model).external = true;
+      // 每次请求都会撞上这道闸门，同一个渠道只记一条，别把事件日志刷满。
+      const seenKey = `${key}|${external.channelId}`;
+      if (!preservedPins.has(seenKey)) {
+        preservedPins.add(seenKey);
+        store.logEvent({ type: 'pin-preserved', provider, model, channelId: external.channelId,
+          reason: 'takeOverExistingPin=false' });
+      }
+      // 文案保持原样：stream-guard 用这条 reason 决定是否给出 A6_EXISTING_PIN 提示。
       return { ok: false, reason: '保留平台已有的固定商家' };
     }
     remember(provider, model).external = false;
     if (failedChannelId && pinned?.channelId === failedChannelId) store.noteBadChannel(site.controlBase, model, failedChannelId, failure?.code || '');
     const exclude = new Set(failedChannels);
-    if (!initial && pinned) exclude.add(pinned.channelId);
+    // 外部固定不放进排除集：接管模式下它也可能是最合适的那一家，那时直接认领，不为换而换。
+    // 只有「本来就是本插件固定的」才在这里排除（那是刚失败/要换掉的那家）。
+    if (!initial && pinned && !external) exclude.add(pinned.channelId);
     if (failedChannelId) exclude.add(failedChannelId);
-    const [candidate] = await loadCandidates(site, model, exclude, { signal, allowStale: !initial });
+    // 只读本地缓存，绝不在这里拉表：25 MB 的表会把切换拖死（实测 90 秒都没完）。
+    // 缓存没有就明确返回「还没准备好」，交给上层降级；刷新在后台跑，下次就有了。
+    let picked = pickCachedCandidates(site, model, exclude);
+    if (!picked.rows.length && waitForChannels) {
+      // 例外：调用方明确说「我可以等」（设置页重新拉取、自检、脚本）。
+      // 这种情况下同步拉一次，拉不到再认输。
+      picked = { rows: await loadCandidates(site, model, exclude, { force: false, signal: callerSignal }), stale: false };
+    }
+    if (!picked.rows.length) {
+      // 商家表不在本地缓存里。**不在这里抛错也不返回 failed**：
+      // 抛错会让整轮对话失败（这是最糟的结果），返回普通失败又会被上层当成「换商家失败」。
+      // 所以先同步等一次刷新——通常后台已经拉好了；等不到再明确报「没有可用商家」。
+      //
+      // 注意：这不是「每次切换都拉 25 MB」的老问题，因为等的是**已经在跑的那一份**
+      // （ensureRefresh 保证同一个 key 只有一份任务），而不是新起一次下载。
+      await ensureRefresh(site, model, identity(site), true);
+      picked = { rows: await loadCandidates(site, model, exclude, { force: false, signal: callerSignal }), stale: false };
+    }
+    if (!picked.rows.length) return { ok: false, reason: '没有满足价格与质量门槛的商家' };    const [candidate] = picked.rows;
     if (!candidate) return { ok: false, reason: '没有满足价格与质量门槛的商家' };
-    signal.throwIfAborted();
+    lifetime.signal.throwIfAborted();
+    callerSignal?.throwIfAborted();
     if (epoch !== policyEpoch) return { ok: false, reason: '路由策略已修改' };
     if (!initial && !store.allowSwitch(cfg.maxSwitchesPerHour - pendingMutations)) return { ok: false, reason: '本小时切换次数已达上限' };
     pendingMutations++;
     try {
+      // 接管模式下选中的正好是外部固定那一家、且它当前生效：只借用，不改站点的设置。
+      // 不写 ownedPins —— 没动过站点的东西，就没有资格在空闲时替它 unpin。
+      if (external && external.strict && candidate.channelId === external.channelId) {
+        sites.set(key, site);
+        lastSwitch.delete(key);
+        generations.set(key, ++serial);
+        const row = { ...candidate, mode: 'adopt', at: Date.now(), controlBase: site.controlBase, attribution: true };
+        lastSwitch.set(key, row);
+        store.logEvent({ type: 'pin-adopted', provider, model, channelId: row.channelId, effRatio: row.effRatio });
+        return { ok: true, provider, model, ...row };
+      }
       const record = { provider, model, controlBase: site.controlBase, userId: String(site.userId), tokenId,
-        channelId: candidate.channelId, previousChannelId: claim?.channelId || null };
+        channelId: candidate.channelId, previousChannelId: claim?.channelId || external?.channelId || null };
       journal(key, record);
       sites.set(key, site);
       lastSwitch.delete(key);
       generations.set(key, ++serial);
+      let externalReleased = false;
       try {
+        if (external) {
+          await unpinChannel({ ...site, signal, tokenId, modelName: model, channelId: external.channelId });
+          externalReleased = true;
+          store.logEvent({ type: 'pin-takeover', provider, model, from: external.channelId, to: candidate.channelId });
+        }
         await pinChannel({ ...site, signal, tokenId, modelName: model, channelId: candidate.channelId, fallbackToSmartRouting: false });
         const confirmed = await currentPin(site, tokenId, model, { signal });
         if (!confirmed?.strict || confirmed.channelId !== candidate.channelId) throw new Error('固定商家回查失败');
         journal(key, { ...record, previousChannelId: null });
-      } catch (error) { pendingRestore.add(key); throw error; }
+      } catch (error) {
+        // 接管失败就把站点还原成接管前的样子，不留一条被插件卸掉的固定记录。
+        if (externalReleased) {
+          try {
+            await pinChannel({ ...site, signal, tokenId, modelName: model, channelId: external.channelId,
+              fallbackToSmartRouting: external.fallbackToSmartRouting });
+            journal(key, null);
+            lastSwitch.delete(key);
+            generations.set(key, ++serial);
+            store.logEvent({ type: 'pin-takeover-rollback', provider, model, channelId: external.channelId,
+              code: error?.message || 'pin-failed' });
+          } catch { pendingRestore.add(key); }
+        } else {
+          pendingRestore.add(key);
+        }
+        throw error;
+      }
       const row = { ...candidate, mode: 'pin', at: Date.now(), controlBase: site.controlBase, attribution: true };
       lastSwitch.set(key, row);
       if (!initial) store.noteSwitch(provider, model);
@@ -655,14 +955,30 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
     if (lifetime.signal.aborted || signal?.aborted) return { ok: false, reason: '已取消' };
     if (restoringAll || sweeps.size || sweepFailures.has(provider)) return { ok: false, reason: '平台默认路由待恢复' };
     const epoch = policyEpoch;
-    const timeout = AbortSignal.timeout(Math.min(cfg.controlTimeoutMs, 12000));
+    /**
+     * 切换是热路径，但它内部包含两件量级差三个数量级的事：
+     *   1) 拉商家表：25 MB，站慢时 15~60 秒；
+     *   2) 查/改 pin：几百字节，正常几百毫秒。
+     *
+     * 用同一个超时必然出事：按 (2) 的尺度给，拉表永远被掐断；按 (1) 的尺度给，
+     * pin 出问题时要干等一分钟。所以这里只做「整体兜底」——够拉完表再做完 pin 就行，
+     * 而每个具体请求自己的超时由 a6Request 的 timeoutMs 单独管（controlTimeoutMs）。
+     */
+    const outerDeadlineMs = Math.max(Number(cfg.controlTimeoutMs) || 20000, 8000)
+      + Math.max(Number(cfg.channelsTimeoutMs) || 90000, 15000);
+    const timeout = AbortSignal.timeout(outerDeadlineMs);
     const control = AbortSignal.any([lifetime.signal, timeout, ...(signal ? [signal] : [])]);
+    // run() 里算出来的账号键，供 catch 分支判断是否已熔断。
+    let lastAccount = '';
     async function run() {
       if (cleanup) await waitFor(cleanup, control);
       const site = resolveSite(provider);
       if (!site.ok) return { ok: false, reason: site.reason };
-      const { tokenId } = await resolveToken(site, provider, { signal: control });
+      // 账号键必须在 resolveToken 之前算出来：探 token 本身就要打控制面，
+      // 站点死掉时正是它先抛错，等那之后再记就来不及标熔断了。
       const account = JSON.stringify([site.controlBase, String(site.userId)]);
+      lastAccount = account;
+      const { tokenId } = await resolveToken(site, provider, { signal: control });
       const key = bindPin(provider, model, account, tokenId);
       if (pendingRestore.has(key)) return { ok: false, reason: '平台默认路由待恢复' };
       const running = changes.get(key);
@@ -670,21 +986,51 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
         const result = await waitFor(running, control);
         return result.ok ? { ...result, provider, model, mode: 'deduped' } : result;
       }
-      if (Date.now() < (controlBlockedUntil.get(account) || 0)) return { ok: false, reason: '控制面处于冷却期' };
-      const task = mutate({ failedChannels: new Set(), ...options, initial, site, tokenId, key, epoch, signal: control });
+      if (Date.now() < (controlBlockedUntil.get(account) || 0)) {
+        // 冷却期内也判一次熔断：冷却只是「别立刻重试」，熔断才是「整体放弃」。
+        if (controlUnavailable(account)) {
+          return { ok: false, reason: '控制面连续无响应，已降级到平台默认路由', unavailable: true };
+        }
+        return { ok: false, reason: '控制面处于冷却期' };
+      }
+      if (controlUnavailable(account)) return { ok: false, reason: '控制面连续无响应，已降级到平台默认路由', unavailable: true };
+      const task = mutate({ failedChannels: new Set(), ...options, initial, site, tokenId, key, epoch, signal: control, callerSignal: signal });
       changes.set(key, task);
-      try { return await task; }
-      catch (error) {
-        if (!control.aborted) boundedSet(controlBlockedUntil, account, Date.now() + 15000);
+      try {
+        const done = await task;
+        noteControlOk(account);
+        return done;
+      } catch (error) {
+        if (!control.aborted) {
+          // 只锁冷却，不在这里记熔断计数：run().catch 会统一记一次，
+          // 两处都记会让「一次失败」被算成两次，缩短熔断窗口。
+          boundedSet(controlBlockedUntil, account, Date.now() + 15000);
+        }
         throw error;
       } finally { changes.delete(key); }
     }
     operations++;
-    const task = run().catch(() => ({ ok: false, reason: '控制面切换失败' }));
+    // 失败要带上「控制面到底能不能用」的判定：只回一句 reason 的话，上层无法区分
+    // 「这家商家坏了」和「整个站挂了」，只能一律抛 A6_ROUTE_NOT_READY 让整轮对话失败。
+    const task = run().catch((error) => {
+      // 也可能死在 mutate。两种都算「控制面没给出结果」，统一记一次失败，
+      // 连续失败累计到 controlUnavailableMs 就熔断。
+      if (lastAccount && !lifetime.signal.aborted) {
+        boundedSet(controlBlockedUntil, lastAccount, Date.now() + 15000);
+        noteControlFailure(lastAccount);
+      }
+      const dead = lastAccount ? controlUnavailable(lastAccount) : false;
+      return dead
+        ? { ok: false, reason: '控制面连续无响应，已降级到平台默认路由', unavailable: true }
+        : { ok: false, reason: '控制面切换失败' };
+    });
     const id = Symbol();
     inflight.set(id, task);
     try {
       const result = await task;
+      // 控制面已熔断：不要再去试备用路由。整站挂掉时备用路由多半也在同一个站上，
+      // 试一遍只会多一次失败、多一条日志，最后仍然抛错让整轮对话失败。
+      if (result.unavailable) return result;
       if (result.ok || initial || epoch !== policyEpoch || control.aborted || !store.allowSwitch(cfg.maxSwitchesPerHour - pendingMutations)) return result;
       const fallback = fallbackRoute({ provider, model }, result.reason, failedRoutes);
       if (fallback.ok) store.noteSwitch(provider, model);
@@ -694,6 +1040,9 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
 
   function updateConfig(next) {
     cfg = next;
+    preservedPins.clear();
+    for (const timer of probeTimers.values()) clearTimeout(timer);
+    probeTimers.clear();
     quoteConfig = Object.fromEntries(quoteKeys.map(key => [key, cfg[key]]));
     selectionKey = JSON.stringify([3, ...Object.values(quoteConfig)]);
     routePins.clear();
@@ -706,6 +1055,13 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
   }
 
   return { planSwitch, beginRequest, startRecovery, setStrategy, strategyStatus, updateConfig,
-    generation, resolveSite, resolveSiteByBase, resolveToken, badChannels, loadCandidates, activeChannel,
-    dispose() { clearTimeout(sweepRetry); clearTimeout(retryTimer); stopIdleTimer(); lifetime.abort(); } };
+    generation, resolveSite, resolveSiteByBase, resolveToken, badChannels, loadCandidates, pickCachedCandidates, ensureRefresh, activeChannel,
+    dispose() {
+      clearTimeout(sweepRetry); clearTimeout(retryTimer); stopIdleTimer();
+      if (channelsTimer) { clearInterval(channelsTimer); channelsTimer = null; }
+      if (channelsKick) { clearTimeout(channelsKick); channelsKick = null; }
+      for (const timer of probeTimers.values()) clearTimeout(timer);
+      probeTimers.clear();
+      lifetime.abort();
+    } };
 }

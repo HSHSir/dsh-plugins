@@ -19,8 +19,9 @@ const root = path.resolve(here, '..');
 const load = (rel) => import(pathToFileURL(path.join(root, rel)).href);
 
 const {
-  cacheBenefitOf, measuredHitOf, parseCandidates, rankCandidates,
+  cacheBenefitOf, measuredHitOf, parseCandidates, rankCandidates, officialWithOverride,
 } = await load('lib/selector.js');
+const { normalizeWorkload, priceModel } = await load('lib/pricing.js');
 const { createStore } = await load('lib/state.js');
 const { normalizeConfig } = await load('lib/config.js');
 const { guardedStream } = await load('lib/stream-guard.js');
@@ -101,21 +102,24 @@ eq('measuredHitOf 空表', measuredHitOf(item, channel, new Map(), cfg), null);
 eq('measuredHitOf 非 Map', measuredHitOf(item, channel, null, cfg), null);
 
 // ---- 3. 排序：实测命中率高的先上 ----
+// 缓存读价按官方一致的比例给（2%），这样 5% 命中率不会把真实成本推到门槛之外，
+// 这条用例只考察「同一价格下命中率决定成本」。
 const mkListing = (id, inputMicros, p50) => ({
   channel_id: id, listing_id: id, model_name: 'm1',
   input_price_micros: inputMicros, output_price_micros: inputMicros * 4,
   cache_read_price_micros: inputMicros * 0.02,
   official_price: { input_price_micros: 1000000, output_price_micros: 4000000, cache_read_price_micros: 20000 },
-  recent_p50_ms: p50, recent_success_rate: 9990, sample_count: 1000,
+  recent_p50_ms: p50, last_test_response_ms: p50, recent_success_rate: 9990, sample_count: 1000,
 });
+// 两家都报 0.1 倍：命中率不同时真实成本不同，但都远在 0.7 门槛之内。
 const payload = { data: [
-  { channel_id: 1, listings: [mkListing(1, 300000, 2000)] },
-  { channel_id: 2, listings: [mkListing(2, 290000, 2000)] },
+  { channel_id: 1, listings: [mkListing(1, 100000, 2000)] },
+  { channel_id: 2, listings: [mkListing(2, 96000, 2000)] },
 ] };
 const measured = new Map([[1, { rate: 0.95, samples: 8 }], [2, { rate: 0.05, samples: 8 }]]);
 const ranked = rankCandidates(parseCandidates(payload, 'm1', cfg, { measuredRates: measured }).candidates, cfg);
 eq('两家都进候选', ranked.length, 2);
-eq('命中率高者排第一（尽管贵 3.4%）', ranked[0].channelId, 1);
+eq('命中率高者排第一（尽管贵 4.2%）', ranked[0].channelId, 1);
 eq('来源标记', ranked[0].cacheSource, 'measured');
 eq('样本数带出', ranked[0].cacheSamples, 8);
 
@@ -129,6 +133,100 @@ const withSite = parseCandidates(payload, 'm1', cfg, {
 const rankedSite = rankCandidates(withSite.candidates, cfg);
 eq('站点数据压过实测', rankedSite.find((c) => c.channelId === 1).cacheSource, 'site-rate');
 eq('没站点数据的仍用实测', rankedSite.find((c) => c.channelId === 2).cacheSource, 'measured');
+
+// ---- 3b. 门槛用真实成本，不是「官网同等命中率」 ----
+// 标价看着便宜（input 0.44 倍），但缓存读价只有 input 的 2%，实测几乎不命中 → 真实成本远超 0.7。
+{
+  const cheat = {
+    channel_id: 4137, listing_id: 4137, model_name: 'm1',
+    input_price_micros: 131040, output_price_micros: 524160, cache_read_price_micros: 2621,
+    official_price: { input_price_micros: 300000, output_price_micros: 1200000, cache_read_price_micros: 6000 },
+    recent_p50_ms: 2251, last_test_response_ms: 3200, recent_success_rate: 9830, sample_count: 1000,
+  };
+  const payloadOne = { data: [{ channel_id: 4137, listings: [cheat] }] };
+  const lowHit = new Map([[4137, { rate: 0.149, samples: 6 }]]);
+  const verdict = parseCandidates(payloadOne, 'm1', cfg, { measuredRates: lowHit });
+  eq('标价便宜但实测不命中 → 真实成本超线被淘汰', verdict.candidates.length, 0);
+  eq('淘汰原因记为成本超线', Object.keys(verdict.rejected)[0], 'effective-over-70pct');
+
+  // 同样的商家，实测命中率够高时应当入选
+  const goodHit = new Map([[4137, { rate: 0.95, samples: 6 }]]);
+  eq('命中率高时同一家可以入选', parseCandidates(payloadOne, 'm1', cfg, { measuredRates: goodHit }).candidates.length, 1);
+
+  // 完全没有实测的新商家：不能因为 unmeasured=0 就被一次性打死
+  eq('未实测的新商家仍按标价判定，不会全灭', parseCandidates(payloadOne, 'm1', cfg, {}).candidates.length, 1);
+}
+
+// ---- 3d. normalizeWorkload 必须幂等（二次规范化不能把假设值清成 0）----
+{
+  const once = normalizeWorkload({ unmeasuredMerchantCacheHitRate: 0.2, officialCacheHitRate: 0.98, outputToInputRatio: 0.005 });
+  eq('一次规范化保留商家缓存假设', once.unmeasuredCacheHitRate, 0.2);
+  const twice = normalizeWorkload(once);
+  eq('二次规范化仍保留商家缓存假设（幂等）', twice.unmeasuredCacheHitRate, 0.2);
+  eq('二次规范化仍保留输出占比（幂等）', twice.outputToInput, 0.005);
+  eq('二次规范化仍保留官网命中率（幂等）', twice.officialCacheHitRate, 0.98);
+
+  // priceModel 内部会再洗一次，这是最容易丢值的地方。
+  const item = { input_price_micros: 27000, output_price_micros: 108000, cache_read_price_micros: 540 };
+  const off = { input_price_micros: 300000, output_price_micros: 1200000, cache_read_price_micros: 6000 };
+  const priced = priceModel(item, off, once, {});
+  eq('priceModel 用上了 20% 假设而不是 0', priced.merchantCacheHitRate, 0.2);
+  near('商家 blend 与手算一致', priced.merchantBlend, 0.8 * 27000 + 0.2 * 540 + 0.005 * 108000, 1e-6);
+  near('官方 blend 与手算一致', priced.officialBlend, 0.02 * 300000 + 0.98 * 6000 + 0.005 * 1200000, 1e-6);
+}
+
+// ---- 3e. 官网基准价覆盖 ----
+{
+  const base = { input_price_micros: 9000, output_price_micros: 36000, cache_read_price_micros: 180,
+    official_price: { input_price_micros: 150000, output_price_micros: 600000, cache_read_price_micros: 3000,
+      pricing_currency: 'USD', pricing_unit: 'per_1m_tokens', charge_type: 'per_token' } };
+  const raw = { channel_id: 900, listing_id: 900, model_name: 'm1', ...base,
+    recent_p50_ms: 2000, last_test_response_ms: 2000, recent_success_rate: 9990, sample_count: 1000 };
+
+  const withStation = parseCandidates({ data: [{ channel_id: 900, listings: [raw] }] }, 'm1', cfg, {}).candidates[0];
+  // 站点 official 便宜 → 分母小 → 倍率高
+  const overrideCfg = normalizeConfig({ ...cfg, officialPriceOverride: { input: 0.9997, output: 3.999, cacheRead: 0.02 } });
+  const withOverride = parseCandidates({ data: [{ channel_id: 900, listings: [raw] }] }, 'm1', overrideCfg, {}).candidates[0];
+
+  eq('覆盖后倍率明显低于站点价', withOverride.effRatio < withStation.effRatio, true);
+  eq('覆盖不改变商家报价', withOverride.inputMicros, withStation.inputMicros);
+  // 覆盖值按商家那条报文的单位解释，币种字段保持原样，priceBasis 才不会判币种冲突
+  eq('覆盖后仍能算出有效倍率', Number.isFinite(withOverride.effRatio), true);
+
+  // 非法覆盖（input 非正）应当被忽略，退回站点价
+  const badCfg = normalizeConfig({ ...cfg, officialPriceOverride: { input: 0 } });
+  eq('非法覆盖被忽略', badCfg.officialPriceOverride, null);
+}
+
+{
+  // 两家成本完全一样，只有延迟不同：一家 p50 极快但最近实测很慢，另一家相反。
+  const mk = (id, p50, testMs, micros) => ({
+    channel_id: id, listing_id: id, model_name: 'm1',
+    input_price_micros: micros, output_price_micros: micros * 4, cache_read_price_micros: micros * 0.02,
+    official_price: { input_price_micros: 1000000, output_price_micros: 4000000, cache_read_price_micros: 20000 },
+    recent_p50_ms: p50, last_test_response_ms: testMs, recent_success_rate: 9990, sample_count: 1000,
+  });
+  const latPayload = { data: [
+    // 历史 p50 很快（1000），但最近一次真实响应 9000ms
+    { channel_id: 11, listings: [mk(11, 1000, 9000, 300000)] },
+    // 历史 p50 一般（3000），最近一次真实响应 1500ms
+    { channel_id: 12, listings: [mk(12, 3000, 1500, 300000)] },
+  ] };
+  const c = parseCandidates(latPayload, 'm1', cfg, {}).candidates;
+  const byId = new Map(c.map(x => [x.channelId, x]));
+  eq('站点延迟取自 last_test_response_ms', byId.get(11).siteLatencyMs, 9000);
+  eq('延迟来源标记为站点实测', byId.get(11).siteLatencyOrigin, 'site-test');
+  eq('p50 仍保留在候选里供门槛使用', byId.get(11).p50Ms, 1000);
+
+  const lr = rankCandidates(c, cfg);
+  eq('最近实测慢的那家排在后面（p50 没有替它说话）', lr[0].channelId, 12);
+
+  // 站点没测过时退回 p50，并标明来源
+  const noTest = mk(13, 2500, 0, 300000);
+  const c13 = parseCandidates({ data: [{ channel_id: 13, listings: [noTest] }] }, 'm1', cfg, {}).candidates[0];
+  eq('没测过时退回 p50', c13.siteLatencyMs, 2500);
+  eq('来源标明是 p50 兜底', c13.siteLatencyOrigin, 'p50-fallback');
+}
 
 // ---- 4. 流层采集 usage ----
 const usage = { inputTokens: 100, cacheReadTokens: 900, cacheWriteTokens: 0, outputTokens: 50 };
@@ -204,6 +302,56 @@ async function drain(stream) { const out = []; for await (const c of stream) out
   eq('输出后保留宿主可归档的错误码', failureCode, 'SERVER');
 }
 
+// 控制面整体挂掉：连续失败超过 controlUnavailableMs 后必须熔断，
+// 熔断期间不再打扰控制面，且把请求放行给平台默认路由（不抛 A6_ROUTE_NOT_READY）。
+{
+  const originalFetch = globalThis.fetch;
+  const controlBase = 'https://down.example.com';
+  let attempts = 0;
+  // 所有控制面请求都超时，模拟「TCP 通、HTTP 全挂」的死站。
+  globalThis.fetch = async () => { attempts++; throw new Error('connect timeout'); };
+  const state = createStore({ dshHome: tempDir('down'), logEvents: false });
+  const switcher = createSwitcher({ cfg: normalizeConfig({
+    defaultControlBase: controlBase, accessToken: 't', userId: '7',
+    controlUnavailableMs: 1, controlProbeMs: 60000,
+    providerOverrides: { 'a6api-7': { tokenId: 10 } },
+  }), store: state });
+  try {
+    const first = await switcher.planSwitch({ provider: 'a6api-7', model: 'm1' , waitForChannels: true });
+    eq('死站下切换失败', first.ok, false);
+
+    // 阈值 1ms，等它过期再进一次：这次必须短路成「不可用」。
+    await new Promise((r) => setTimeout(r, 12));
+    const before = attempts;
+    const second = await switcher.planSwitch({ provider: 'a6api-7', model: 'm1' , waitForChannels: true });
+    eq('超过阈值后短路返回不可用', second.unavailable, true);
+    eq('熔断后不再打控制面', attempts, before);
+    eq('熔断原因说清楚了', /降级到平台默认路由/.test(second.reason || ''), true);
+
+    // beginRequest 遇到熔断必须放行，而不是抛 A6_ROUTE_NOT_READY。
+    // 注意必须处在智能路由模式下才会走 planSwitch；平台默认模式下入口本来就不碰控制面。
+    await switcher.setStrategy('smart').catch(() => {});
+    const release = await switcher.beginRequest('a6api-7', 'm1', undefined, { waitForChannels: true }).then(
+      (fn) => { fn(); return 'released'; },
+      (error) => `threw:${error.code}`,
+    );
+    eq('熔断时入口放行，不抛错', release, 'released');
+
+    // 关闭熔断（0）时一切照旧：只会冷却，不会短路。
+    switcher.updateConfig(normalizeConfig({
+      defaultControlBase: controlBase, accessToken: 't', userId: '7',
+      controlUnavailableMs: 0, controlProbeMs: 60000,
+      providerOverrides: { 'a6api-7': { tokenId: 10 } },
+    }));
+    const third = await switcher.planSwitch({ provider: 'a6api-7', model: 'm1' , waitForChannels: true });
+    eq('熔断关闭时不短路（只冷却）', third.unavailable, undefined);
+  } finally {
+    switcher.dispose();
+    state.dispose();
+    globalThis.fetch = originalFetch;
+  }
+}
+
 // 控制面请求通过本地模拟覆盖凭据范围、取消及跨 provider 的共享 pin。
 {
   const originalFetch = globalThis.fetch;
@@ -233,7 +381,7 @@ async function drain(stream) { const out = []; for await (const c of stream) out
     defaultControlBase: controlBase, accessToken: 'test-token', userId: '5', cacheWeight: 0,
     providerOverrides: { 'a6api-1': { tokenId: 10 }, 'a6api-2': { tokenId: 10 } },
   }), store: state });
-  const releaseRequest = await switcher.beginRequest('a6api-1', 'm1');
+  const releaseRequest = await switcher.beginRequest('a6api-1', 'm1', undefined, { waitForChannels: true });
   let first;
   try {
     eq('凭据不可移到其他源', switcher.resolveSiteByBase('https://elsewhere.example').ok, false);
@@ -243,12 +391,12 @@ async function drain(stream) { const out = []; for await (const c of stream) out
     eq('拒绝时没有发请求', requests.length, 2);
     const cancelled = new AbortController();
     cancelled.abort();
-    eq('已取消的切换不访问控制面', (await switcher.planSwitch({ provider: 'a6api-1', model: 'm1', signal: cancelled.signal })).ok, false);
+    eq('已取消的切换不访问控制面', (await switcher.planSwitch({ provider: 'a6api-1', model: 'm1', signal: cancelled.signal , waitForChannels: true })).ok, false);
     eq('取消时没有发请求', requests.length, 2);
-    first = switcher.planSwitch({ provider: 'a6api-1', model: 'm1' });
+    first = switcher.planSwitch({ provider: 'a6api-1', model: 'm1' , waitForChannels: true });
     const reachedPin = await Promise.race([pinStarted.then(() => true), first.then(() => false)]);
     eq('正常切换到达 pin 请求', reachedPin, true);
-    const concurrent = reachedPin ? switcher.planSwitch({ provider: 'a6api-2', model: 'm1' }) : null;
+    const concurrent = reachedPin ? switcher.planSwitch({ provider: 'a6api-2', model: 'm1' , waitForChannels: true }) : null;
     releasePin();
     const chosen = await first;
     if (concurrent) {
@@ -268,6 +416,78 @@ async function drain(stream) { const out = []; for await (const c of stream) out
     state.dispose();
     globalThis.fetch = originalFetch;
   }
+}
+
+// 站点上已有「不是本插件写的」固定商家：默认保留，开启接管后才动手。
+{
+  const originalFetch = globalThis.fetch;
+  const controlBase = 'https://example.com';
+  const paced = { data: [1, 2, 3, 4].map((id, i) => ({ channel_id: id, listings: [mkListing(id, 300000, 1000 + i * 100 + (i > 1 ? 300 : 0))] })) };
+
+  /**
+   * @param {{takeOver:boolean, externalChannel:number, breakPin?:boolean}} options
+   */
+  async function scenario({ takeOver, externalChannel, breakPin = false }) {
+    const calls = [];
+    let pinned = { token_id: 10, model_name: 'm1', channel_id: externalChannel,
+      channel_name: `Channel ID ${externalChannel}`, status: 'active', route_effective: true, fallback_to_smart_routing: false };
+    globalThis.fetch = async (url, options) => {
+      const body = options?.body ? JSON.parse(options.body) : null;
+      calls.push([url.pathname, body]);
+      const reply = (value) => new Response(JSON.stringify(value));
+      if (url.pathname.endsWith('/pins')) return reply({ data: pinned ? [{ ...pinned, token_name: 'a6-1' }] : [] });
+      if (url.pathname.endsWith('/channels')) return reply(paced);
+      if (url.pathname.endsWith('/unpin')) { pinned = undefined; return reply({ success: true }); }
+      if (url.pathname.endsWith('/pin')) {
+        // breakPin：第一次改绑「假成功」——接口回 200，但站点实际没变，回查会识破。
+        const attempts = calls.filter(([p]) => p.endsWith('/pin')).length;
+        if (breakPin && attempts === 1) return reply({ success: true });
+        pinned = { ...body, status: 'active', route_effective: true };
+        return reply({ success: true });
+      }
+      throw new Error('Unexpected test request');
+    };
+    const state = createStore({ dshHome: tempDir(`takeover-${takeOver}-${externalChannel}-${breakPin}`), logEvents: false });
+    const switcher = createSwitcher({ cfg: normalizeConfig({
+      defaultControlBase: controlBase, accessToken: 'test-token', userId: '5', cacheWeight: 0, takeOverExistingPin: takeOver,
+      providerOverrides: { 'a6api-1': { tokenId: 10 } },
+    }), store: state });
+    try {
+      const result = await switcher.planSwitch({ provider: 'a6api-1', model: 'm1', initial: true , waitForChannels: true });
+      const kinds = calls.map(([path]) => path.split('/').pop());
+      return { result, calls, kinds, state, owned: state.ownedPins(), active: switcher.activeChannel('a6api-1', 'm1'),
+        finalPinned: pinned };
+    } finally {
+      switcher.dispose();
+      globalThis.fetch = originalFetch;
+    }
+  }
+
+  const preserved = await scenario({ takeOver: false, externalChannel: 3 });
+  eq('默认不接管：保留外部固定', preserved.result.ok, false);
+  eq('默认不接管：给出保留原因', preserved.result.reason, '保留平台已有的固定商家');
+  eq('默认不接管：不解除也不改绑', preserved.kinds.includes('unpin') || preserved.kinds.includes('pin'), false);
+  eq('默认不接管：不留归属记录', Object.keys(preserved.owned).length, 0);
+
+  const taken = await scenario({ takeOver: true, externalChannel: 3 });
+  eq('开启接管：解除外部固定后改绑', taken.result.ok && taken.result.mode === 'pin', true);
+  eq('开启接管：先 unpin 再 pin', taken.kinds.filter(k => k === 'unpin' || k === 'pin'), ['unpin', 'pin']);
+  eq('开启接管：解除的是外部那一家', taken.calls.find(([, b]) => b?.channel_id === 3 && b?.model_name)?.[1].channel_id, 3);
+  eq('开启接管：改绑到候选商家', taken.result.channelId, 1);
+  eq('开启接管：写入归属记录以便空闲归还', Object.keys(taken.owned).length, 1);
+  eq('开启接管：当前活跃商家随之更新', taken.active?.channelId, 1);
+
+  const adopted = await scenario({ takeOver: true, externalChannel: 1 });
+  eq('外部那家就是最优：直接沿用', adopted.result.ok && adopted.result.mode === 'adopt', true);
+  eq('外部那家就是最优：不动站点设置', adopted.kinds.includes('unpin') || adopted.kinds.includes('pin'), false);
+  eq('外部那家就是最优：不写归属记录', Object.keys(adopted.owned).length, 0);
+  eq('外部那家就是最优：请求照常发往该商家', adopted.active?.channelId, 1);
+
+  const rolledBack = await scenario({ takeOver: true, externalChannel: 3, breakPin: true });
+  eq('改绑回查失败：本次仍算失败', rolledBack.result.ok, false);
+  eq('改绑回查失败：把原固定还原回去', rolledBack.finalPinned?.channel_id, 3);
+  eq('改绑回查失败：还原时保留对方原有的兜底设置', rolledBack.finalPinned?.fallback_to_smart_routing, false);
+  eq('改绑回查失败：不留归属记录冒充已接管', Object.keys(rolledBack.owned).length, 0);
 }
 
 // 通过真实插件入口验收首包前门控、共享预热和热路径额外耗时。
@@ -368,6 +588,14 @@ async function drain(stream) { const out = []; for await (const c of stream) out
     dropNext = true;
     const out = await drain(runtime.stream(options));
     eq('原路快速恢复并返回正文', out.find(chunk => chunk.type === 'text-delta')?.text, 'ok');
+    // 方案 B 之后，切换只读缓存：先让插件真正拉一次商家表，后面的换商家才有候选可用。
+    // 这里直接走设置页那条约等于「重新拉取」的路径（waitForChannels），把缓存预热好。
+    {
+      const base = ctx?.switcher?.resolveSite?.(options.provider);
+      if (base?.ok) {
+        await ctx.switcher.loadCandidates(base, options.model, new Set(), { force: true }).catch(() => {});
+      }
+    }
     hangNext = true;
     const held = setTimeout(() => {}, 5000);
     try {

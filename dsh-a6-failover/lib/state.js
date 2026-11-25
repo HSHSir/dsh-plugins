@@ -282,6 +282,22 @@ export function createStore({ dshHome = resolveDshHome(), logEvents = true, now 
     setChannels(controlBase, model, candidates, meta = {}) {
       record(state.channels, `${controlBase}|${model}`, { at: now(), candidates, ...meta }, 32);
     },
+    /**
+     * 所有已缓存的控制面 → { model: rows } 视图，供后台定时刷新遍历。
+     * 只返回还有候选的条目，空表不参与刷新。
+     */
+    allChannels() {
+      const out = {};
+      for (const [key, row] of Object.entries(state.channels || {})) {
+        if (!row || !Array.isArray(row.candidates) || !row.candidates.length) continue;
+        const sep = key.indexOf('|');
+        if (sep <= 0) continue;
+        const base = key.slice(0, sep);
+        const model = key.slice(sep + 1);
+        (out[base] ||= {})[model] = row;
+      }
+      return out;
+    },
     /** 某条路由已知的坏商家（来自本插件与模型管家的 bad 表）。 */
     badChannels(controlBase, model, ttlMs = 6 * 3600 * 1000) {
       const host = String(controlBase || '').replace(/^https?:\/\//, '').replace(/\/.*$/, '');

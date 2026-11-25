@@ -57,11 +57,11 @@ test('healthy platform, shared alias generation, idle grace, and strict restorat
   const { server, boot } = setup(t);
   const { sw } = boot();
   await sw.startRecovery();
-  const endA = await sw.beginRequest(a, model);
-  const endB = await sw.beginRequest(b, model);
+  const endA = await sw.beginRequest(a, model, undefined, { waitForChannels: true });
+  const endB = await sw.beginRequest(b, model, undefined, { waitForChannels: true });
   assert.equal(server.calls, 2); // 同令牌两个别名只执行一轮启动清理并回查。
   const initial = sw.generation(b, model);
-  const [x, y] = await Promise.all([a, b].map(provider => sw.planSwitch({ provider, model, failedGeneration: initial })));
+  const [x, y] = await Promise.all([a, b].map(provider => sw.planSwitch({ provider, model, failedGeneration: initial, waitForChannels: true })));
   assert.ok(x.ok && y.ok);
   assert.equal(server.writes, 1);
   assert.equal(x.channelId, y.channelId);
@@ -69,7 +69,7 @@ test('healthy platform, shared alias generation, idle grace, and strict restorat
   assert.equal(server.writes, 1);
   await endA();
   await endB();
-  const endC = await sw.beginRequest(a, model);
+  const endC = await sw.beginRequest(a, model, undefined, { waitForChannels: true });
   await delay(1050);
   assert.equal(server.deletes, 0);
   await endC();
@@ -95,7 +95,7 @@ test('manual smart survives idle and config save; restart clears managed binding
   await sw.setStrategy('smart', [{ provider: a, model }]);
   assert.equal(server.writes, 0); // 手动开关不预先固定商家。
   sw.updateConfig({ ...cfg });
-  const end = await sw.beginRequest(b, model);
+  const end = await sw.beginRequest(b, model, undefined, { waitForChannels: true });
   await end();
   assert.equal(sw.strategyStatus().manual, true);
   assert.equal(server.writes, 1);
@@ -112,12 +112,12 @@ test('pending unpin fences affected request; restart also clears a changed manag
   const { server, boot } = setup(t);
   const { sw, store } = boot();
   await sw.setStrategy('smart', [{ provider: a, model }]);
-  const end = await sw.beginRequest(a, model);
+  const end = await sw.beginRequest(a, model, undefined, { waitForChannels: true });
   await end();
   server.unpinWorks = false;
   await assert.rejects(sw.setStrategy('platform'));
   assert.equal(sw.strategyStatus().phase, 'restoring');
-  await assert.rejects(sw.beginRequest(b, model));
+  await assert.rejects(sw.beginRequest(b, model, undefined, { waitForChannels: true }));
   server.pinned.channel_id = 999;
   sw.dispose(); store.dispose();
   const { sw: resumed } = boot();

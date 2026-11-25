@@ -18,7 +18,8 @@ export const EDITABLE_KEYS = Object.freeze([
   // 价格线
   'maxEffectiveRatio', 'cacheHitRate', 'officialCacheHitRate', 'merchantCacheHitRate', 'unmeasuredMerchantCacheHitRate',
   'outputToInputRatio', 'useMeasuredOutputRatio', 'outputRatioMinSamples', 'cacheWriteShare', 'assumeMissingCacheAsInput',
-  'maxPriceRatio', 'fxCnyPerUsd',
+  'officialPriceOverride', 'maxPriceRatio', 'fxCnyPerUsd',
+  'proxyUrl', 'connectionMode', 'directProbeMs', 'channelsRefreshMs', 'channelsTimeoutMs',
   // 打分权重
   'priceWeight', 'reliabilityWeight', 'cacheWeight', 'cacheFallbackDiscount', 'cacheMeasureMinSamples', 'latencyWeight', 'successWeight',
   // 延迟与质量门槛
@@ -27,7 +28,7 @@ export const EDITABLE_KEYS = Object.freeze([
   'firstResponseTimeoutMs', 'firstResponseBudgetMs', 'streamStallTimeoutMs', 'sameRouteRetries',
   'maxSwitchesPerCall', 'maxSwitchesPerHour', 'degradeAfterFailures', 'degradeCooldownMs', 'switchDedupeMs',
   'switchOnThrown', 'switchOnFinishError', 'switchOnEmpty', 'switchOnTruncated',
-  'preferFallbackWhenDegraded', 'fallbackToSmartRouting', 'fallbackRoutes',
+  'preferFallbackWhenDegraded', 'fallbackToSmartRouting', 'takeOverExistingPin', 'fallbackRoutes',
   'autoSwitchOnContextFailure', 'contextHeadroomRatio', 'maxContextSwitchesPerHour',
   // 观测
   'verbose', 'logEvents', 'channelCacheTtlMs', 'controlTimeoutMs',
@@ -47,7 +48,7 @@ const NUMERIC = new Set([
 
 const BOOLEAN = new Set([
   'enabled', 'assumeMissingCacheAsInput', 'switchOnThrown', 'switchOnFinishError', 'switchOnEmpty',
-  'switchOnTruncated', 'preferFallbackWhenDegraded', 'fallbackToSmartRouting', 'verbose', 'logEvents',
+  'switchOnTruncated', 'preferFallbackWhenDegraded', 'fallbackToSmartRouting', 'takeOverExistingPin', 'verbose', 'logEvents',
   'autoSwitchOnContextFailure', 'cacheFallbackDiscount', 'useMeasuredOutputRatio',
 ]);
 
@@ -99,6 +100,20 @@ export function pickEditable(source = {}) {
           .filter((row) => row && typeof row === 'object')
           .map((row) => ({ provider: String(row.provider || '').trim(), model: String(row.model || '').trim() }))
           .filter((row) => row.provider && row.model);
+      }
+      continue;
+    }
+    if (key === 'officialPriceOverride') {
+      // 官网基准价：三个数都是元/百万 token；input 必须为正，否则当作「不用覆盖」。
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        const take = (k) => {
+          const n = Number(value[k]);
+          return Number.isFinite(n) && n >= 0 ? n : null;
+        };
+        const input = take('input');
+        if (input > 0) {
+          out[key] = { input, output: take('output') ?? input * 4, cacheRead: take('cacheRead') ?? input * 0.02 };
+        }
       }
       continue;
     }

@@ -1,7 +1,7 @@
 {
   "name": "dsh-a6-failover",
-  "version": "0.6.3",
-  "description": "DSH 插件：A6API 等 new-api 中转站的模型响应异常时，主动切换商家并重跑；按实际用量折算价格，超过官网 70% 的商家直接忽略。",
+  "version": "0.7.1",
+  "description": "DSH a6-failover: switch A6API merchants when model responses fail; price by real usage, drop merchants over 70% of official cost.",
   "icon": "assets/a6-icon.png",
   "type": "module",
   "main": "lib/index.js",
@@ -71,9 +71,9 @@
     "usage",
     "cache",
     "fallback",
-    "中转站",
-    "换商家",
-    "费用"
+    "relay",
+    "merchant-switch",
+    "billing"
   ],
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",

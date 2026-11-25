@@ -651,6 +651,7 @@ export function apply(ctx, config) {
     fallbackRoutes: cfg.fallbackRoutes.length,
     prewarmRoutes: cfg.prewarmRoutes.length,
     fallbackToSmartRouting: cfg.fallbackToSmartRouting,
+    takeOverExistingPin: cfg.takeOverExistingPin,
   });
   log(`已启用：provider 匹配 ${cfg.providerPattern}，控制面 ${cfg.defaultControlBase}，单次最多切 ${cfg.maxSwitchesPerCall} 次`);
 }

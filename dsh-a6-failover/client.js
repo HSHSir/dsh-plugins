@@ -108,15 +108,55 @@ window.__ModuleLoader__.load({
   {
     "title": "1 · 门槛",
     "open": true,
-    "description": "先淘汰不符合条件的商家，只有全部通过才进入打分。成本配比同时用于价格门槛和价格评分。",
+    "description": "先淘汰不符合条件的商家，只有全部通过才进入打分。门槛比较的是这家自己的真实成本（报价 × 它自己的命中率）；还没实测过的商家按标价判定，不会被一次性打死。",
     "fields": [
       {
         "key": "maxEffectiveRatio",
         "label": "实际成本 / 官网成本上限",
         "type": "number",
-        "hint": "0.7 表示最多为官网成本的 70%。",
+        "hint": "0.7 表示最多为官网成本的 70%。有本机实测命中率时按真实成本判，否则按标价倍率判。",
         "step": 0.05,
         "min": 0
+      },
+      {
+        "key": "proxyUrl",
+        "label": "HTTP 代理地址",
+        "type": "text",
+        "hint": "例如 http://127.0.0.1:7897。A6API 的域名解析到私有地址段（172.80.127.x），不走代理时插件连不上控制面。留空则读环境变量 HTTPS_PROXY / HTTP_PROXY / ALL_PROXY。"
+      },
+      {
+        "key": "connectionMode",
+        "label": "连接方式",
+        "type": "select",
+        "options": [
+          { "value": "direct-first", "label": "直连优先（不行切代理，推荐）" },
+          { "value": "proxy-first", "label": "代理优先（不行切直连）" },
+          { "value": "direct-only", "label": "只直连" },
+          { "value": "proxy-only", "label": "只走代理" }
+        ],
+        "hint": "默认直连优先：直连在下面的探活超时内连不上，才自动切代理。"
+      },
+      {
+        "key": "directProbeMs",
+        "label": "直连探活超时（毫秒）",
+        "type": "number",
+        "step": 500,
+        "min": 200,
+        "hint": "默认 1500ms。直连超过这个时间没连上就判定不通，立即切代理。"
+      },
+      {
+        "key": "channelsRefreshMs",
+        "label": "后台刷新商家表间隔（分钟）",
+        "type": "number",
+        "scale": 60000,
+        "step": 5,
+        "hint": "默认 30 分钟。商家表约 25 MB，切换本身只读缓存、不会现场拉表，所以这张表的新鲜度由这里决定。"
+      },
+      {
+        "key": "officialPriceOverride",
+        "label": "官网基准价（元/百万 token）",
+        "type": "price3",
+        "hint": "留空则用站点返回的 official_price。站点这个价实测比 DeepSeek 真实账单低一个数量级，会把合格商家判成贵的；填成你账单上的口径（默认 98% 命中、0.5% 输出占比时约 5.96 元/亿）。"
       },
       {
         "key": "maxPriceRatio",
@@ -130,7 +170,7 @@ window.__ModuleLoader__.load({
         "key": "hardP50Ms",
         "label": "p50 延迟上限（毫秒）",
         "type": "number",
-        "hint": "超过上限淘汰；缺少有效延迟数据也会淘汰。",
+        "hint": "只用于入选：p50 超过上限的商家直接淘汰，且在候选过半时优先保留 p50 更低的那一半。p50 本身不参与打分。",
         "step": 500,
         "min": 0
       },
@@ -186,13 +226,13 @@ window.__ModuleLoader__.load({
   {
     "title": "2 · 打分",
     "open": true,
-    "description": "分数越低越优先。成本、可靠性、延迟的默认权重为 60 / 30 / 10。权重按总和折算，无需凑成 100；全部为 0 时所有商家同分。",
+    "description": "分数越低越优先。成本、可靠性、延迟的默认权重为 60 / 30 / 10。权重按总和折算，无需凑成 100；全部为 0 时所有商家同分。p50 只在门槛阶段使用，不参与打分。",
     "fields": [
       {
         "key": "priceWeight",
         "label": "成本权重",
         "type": "number",
-        "hint": "按实际成本倍率的对数刻度计分。",
+        "hint": "按实际成本倍率（商家报价 × 它自己的命中率 × 实测输出比）的对数刻度计分。",
         "step": 5,
         "min": 0
       },
@@ -208,7 +248,7 @@ window.__ModuleLoader__.load({
         "key": "latencyWeight",
         "label": "延迟权重",
         "type": "number",
-        "hint": "优先使用实测首块延迟 p50，缺少实测时使用站点 p50。延迟除以参考值计分，最高为 3。",
+        "hint": "用站点「延迟」列（最近一次真实响应耗时），越低越好；没测过才退回 p50 并标明来源。p50 本身不参与打分。",
         "step": 5,
         "min": 0
       },
@@ -226,8 +266,26 @@ window.__ModuleLoader__.load({
   {
     "title": "3 · 切换与等待",
     "open": false,
-    "description": "等待时间按每次模型请求计算；重试、换商和等待新商家首块共享总预算。",
+    "description": "等待时间按每次模型请求计算；重试、换商和等待新商家首块共享总预算。控制面整体不可用时会自动降级到平台默认路由，不让整轮对话失败。",
     "fields": [
+      {
+        "key": "controlUnavailableMs",
+        "label": "控制面连续无响应多久后降级（秒）",
+        "hint": "默认 120 秒。站点整体挂掉时，超过这个时长就停止打扰控制面，把这轮请求直接交给平台默认路由。0 = 关闭（旧行为，会一直重试并反复报错）。",
+        "type": "number",
+        "scale": 1000,
+        "step": 10,
+        "min": 0
+      },
+      {
+        "key": "controlProbeMs",
+        "label": "降级后探活间隔（秒）",
+        "hint": "默认 30 秒。降级期间只读探活，一旦通了立刻恢复智能选商。",
+        "type": "number",
+        "scale": 1000,
+        "step": 5,
+        "min": 5
+      },
       {
         "key": "firstResponseTimeoutMs",
         "label": "原路无响应多久开始换商（秒）",
@@ -298,6 +356,12 @@ window.__ModuleLoader__.load({
         "hint": "滑动一小时；耗尽后仍可尝试备用路由。",
         "step": 1,
         "min": 0
+      },
+      {
+        "key": "takeOverExistingPin",
+        "label": "接管站点已有的固定商家",
+        "type": "bool",
+        "hint": "关闭时：站点上若已有非本插件设置的固定商家，插件保留它并停止本次选商（报 A6_ROUTE_NOT_READY）。开启后：选出更合适的商家就解除原固定并改绑，失败会还原；原来那家最合适时直接沿用，不改站点设置。注意：被解除的那条外部固定不会自动恢复。"
       },
       {
         "key": "fallbackRoutes",
@@ -420,6 +484,7 @@ window.__ModuleLoader__.load({
       cacheWriteShare: [0, 1], fxCnyPerUsd: [0.01, 100], hardP50Ms: [1, Number.MAX_SAFE_INTEGER],
       latencyRefMs: [1, Number.MAX_SAFE_INTEGER], maxFailRate: [0, 100],
       controlTimeoutMs: [1000, 180000],
+      controlUnavailableMs: [0, 3600000], controlProbeMs: [5000, 600000],
     };
     for (const group of GROUPS) for (const field of group.fields) {
       if (field.type !== 'number') continue;
@@ -438,8 +503,35 @@ window.__ModuleLoader__.load({
           checked: value === true,
           onChange: (event) => onChange(event.target.checked),
         });
+      } else if (field.type === 'select') {
+        control = h('select', { ...common, value: value || field.options?.[0]?.value || '',
+          onChange: (event) => onChange(event.target.value) },
+          ...(field.options || []).map((opt) => h('option', { key: opt.value, value: opt.value }, opt.label)));
       } else if (field.type === 'routes') {
         control = h('textarea', { ...common, rows: 3, value: Array.isArray(value) ? value.map((r) => `${r.provider}/${r.model}`).join('\n') : (value ?? ''), onChange: (event) => onChange(event.target.value) });
+      } else if (field.type === 'price3') {
+        // 三个数字塞在一行：输入 / 输出 / 缓存读，单位元每百万 token。
+        const cur = value && typeof value === 'object' ? value : {};
+        const sub = (key, label, scale) => h('label', { style: S.field, htmlFor: `${id}-${key}` },
+          h('span', { style: S.label }, label),
+          h('input', {
+            id: `${id}-${key}`,
+            style: S.input,
+            type: 'number',
+            step: key === 'cacheRead' ? 0.001 : 0.1,
+            min: 0,
+            value: cur[key] == null ? '' : cur[key],
+            onChange: (event) => {
+              const next = { ...cur };
+              if (event.target.value === '') delete next[key];
+              else next[key] = Number(event.target.value) / scale;
+              onChange(Object.keys(next).length ? next : null);
+            },
+          }));
+        control = h('div', { style: { display: 'grid', gap: 4 } },
+          sub('input', '输入', field.scale || 1),
+          sub('output', '输出', field.scale || 1),
+          sub('cacheRead', '缓存读', field.scale || 1));
       } else if (field.type === 'secret') {
         control = h('input', {
           ...common,
@@ -510,6 +602,7 @@ window.__ModuleLoader__.load({
               ['预计成本 / 百万输入 token', money(r.cnyPerMillion)],
               ['缓存命中率', source && Number.isFinite(r.cacheRate) ? `${pct(r.cacheRate)}（${source}）` : '无观测数据'],
               ['候选延迟 P50', Number.isFinite(r.p50Ms) ? `${r.p50Ms} ms（${({ measured: '本机首块实测', 'site-ttft': '站点首块统计', site: '站点延迟指标' })[r.latencySource] || '来源待确认'}）` : '无数据'],
+              ['打分用延迟', Number.isFinite(r.siteLatencyMs) ? `${r.siteLatencyMs} ms（${({ 'site-test': '站点最近实测', 'p50-fallback': 'p50 兜底', 'measured-first-block': '本机首块实测', none: '无数据' })[r.siteLatencyOrigin] || '来源待确认'}）` : '无数据'],
             ] }));
         }));
     }

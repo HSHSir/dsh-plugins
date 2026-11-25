@@ -223,12 +223,16 @@ function cacheFields(benefit) {
 export function refreshCandidateCache(candidate, cfg, measured, now = Date.now(), stats = null) {
   // 实测的失败率与延迟每次重排都要刷新：它们比缓存快照变得快得多。
   const stat = stats instanceof Map ? stats.get(candidate.channelId) : null;
+  // siteLatencyMs 是站点自己的值，这里不动它——只有本机实测首块延迟够样本时才用它覆盖，
+  // 那是「我们真打了这一家」的证据，比站点自报更可信。p50 不参与打分，只更新门槛用的 realP50Ms。
+  const measuredLatency = stat && stat.p50Ms > 0 && stat.latencySamples >= 2 ? Math.round(stat.p50Ms) : 0;
   const live = stat ? {
     measuredCalls: Number(stat.calls || 0),
     measuredFails: Number((stat.fails || 0).toFixed(2)),
     realFailRate: smoothedFailRate(stat.calls, stat.fails, 1 - candidate.successRate),
-    realP50Ms: stat.p50Ms > 0 && stat.latencySamples >= 2 ? Math.round(stat.p50Ms) : candidate.p50Ms,
-    latencySource: stat.p50Ms > 0 && stat.latencySamples >= 2 ? 'measured' : (candidate.siteLatencySource || 'site'),
+    realP50Ms: measuredLatency || candidate.p50Ms,
+    latencySource: measuredLatency ? 'measured' : (candidate.siteLatencySource || 'site'),
+    ...(measuredLatency ? { siteLatencyMs: measuredLatency, siteLatencyOrigin: 'measured-first-block' } : {}),
   } : {};
   if (candidate.cacheSource === 'site-rate'
       && validSnapshotTime(candidate.cacheSnapshotAt, now, candidate.cacheSnapshotExpiresAt)) {
@@ -238,8 +242,32 @@ export function refreshCandidateCache(candidate, cfg, measured, now = Date.now()
   return { ...candidate, ...cacheFields(benefit), ...live };
 }
 
-/** 平滑失败率：样本少的时候别把「一次失败」当死刑。 */
-export function smoothedFailRate(realCalls, realFails, siteFailRate) {
+/**
+ * 官网基准价：默认用站点返回的 official_price，配置了 officialPriceOverride 就换成它。
+ *
+ * 实测站点 official_price 比 DeepSeek 官网真实账单低一个数量级（站点 ¥0.15 输入 vs
+ * 账单折算 ¥1.0 量级）。分母偏小会让所有商家都显得贵，门槛把合格商家误杀，所以允许
+ * 用真实账单校准出一组价覆盖进去。
+ *
+ * **币种必须跟着商家报价走**：priceBasis 要求两侧币种一致，否则直接判 currency-mismatch。
+ * 所以覆盖值只替换三个数字，其余字段（pricing_currency / pricing_unit / charge_type）
+ * 原样保留 —— 相当于「按商家那条报文的单位来理解这三个数」。
+ */
+export function officialWithOverride(item, cfg) {
+  const raw = item?.official_price && typeof item.official_price === 'object' ? item.official_price : {};
+  const override = cfg?.officialPriceOverride;
+  if (!override || !(Number(override.input) > 0)) return raw;
+  const micros = (yuan) => Math.round(Number(yuan) * 1e6);
+  return {
+    ...raw,
+    input_price_micros: micros(override.input),
+    output_price_micros: micros(override.output),
+    cache_read_price_micros: micros(override.cacheRead),
+    price_source: 'config-override',
+  };
+}
+
+/** 平滑失败率：样本少的时候别把「一次失败」当死刑。 */export function smoothedFailRate(realCalls, realFails, siteFailRate) {
   const calls = Math.max(0, toInt(realCalls));
   const fails = Math.max(0, toInt(realFails));
   const prior = Number.isFinite(siteFailRate) ? Math.min(1, Math.max(0, siteFailRate)) : 0.02;
@@ -262,7 +290,7 @@ export function classifyListing(item, channel, cfg, options = {}) {
   if (!item || typeof item !== 'object') return { ok: false, reason: 'bad-row' };
   if (item.supplier_channel_disabled || item.user_channel_disabled) return { ok: false, reason: 'disabled' };
 
-  const official = item.official_price && typeof item.official_price === 'object' ? item.official_price : {};
+  const official = officialWithOverride(item, cfg);
   const channelId = toInt(item.channel_id || channel?.channel_id);
   if (channelId <= 0) return { ok: false, reason: 'bad-row' };
   if (excludeChannels.has(channelId)) return { ok: false, reason: 'failed-this-call' };
@@ -273,12 +301,17 @@ export function classifyListing(item, channel, cfg, options = {}) {
   const measuredHit = options.measuredRates instanceof Map
     ? measuredHitOf(item, channel, options.measuredRates, cfg)
     : null;
-  const merchantHitRate = measuredHit && Number.isFinite(measuredHit.value)
-    ? measuredHit.value
+  /**
+   * 三态，别把「没测过」冒充成「测出来是 0」：
+   *   { hit: 数字, measured: true }  —— 本机实测；
+   *   cfg.merchantCacheHitRate 是数字 —— 配置写死的调试值；
+   *   其余 —— 未测，交给 priceModel 用 unmeasuredMerchantCacheHitRate 兜底。
+   */
+  const merchantCache = measuredHit && Number.isFinite(measuredHit.value)
+    ? { hit: measuredHit.value, measured: true }
     : (Number.isFinite(cfg.merchantCacheHitRate)
-      ? cfg.merchantCacheHitRate
-      // 没实测过就按保守值估，别默认它会缓存命中；配置缺失时也按 0（全价）算
-      : (Number.isFinite(cfg.unmeasuredMerchantCacheHitRate) ? cfg.unmeasuredMerchantCacheHitRate : 0));
+      ? { hit: cfg.merchantCacheHitRate, measured: false }
+      : { hit: null, measured: false });
 
   // 渠道级实测：成功/失败次数与首块延迟。有了它就不用全靠站点给的群体口径。
   const stat = options.measuredStats instanceof Map ? options.measuredStats.get(channelId) : null;
@@ -291,14 +324,26 @@ export function classifyListing(item, channel, cfg, options = {}) {
     ? { ...workload, outputToInput: Math.min(Math.max(stat.outputRatio, 0), 3) }
     : workload;
 
-  const priced = priceModel(item, official, listingWorkload, { merchantCacheHitRate: merchantHitRate });
+  const priced = priceModel(item, official, listingWorkload, { merchantCacheHitRate: merchantCache.hit });
   if (!priced.ok) return { ok: false, reason: priced.code, priced };
-  // 门槛用「官网同等命中率」下的报价比：它回答的是「这家报价本身贵不贵」，
-  // 不该因为你这次实测命中低就把它整条踢掉。真实成本只用来排序（见 effRatio）。
-  const gate = Number.isFinite(merchantHitRate)
-    ? priceModel(item, official, workload, { merchantCacheHitRate: workload.officialCacheHitRate })
-    : priced;
-  const gateRatio = gate.ok ? gate.ratio : priced.ratio;
+  // 门槛用**这家自己的真实成本**：商家报价 × 它自己的命中率 × 实测输出比。
+  //
+  // 曾经用「官网同等命中率」判门槛，理由是「别因为这次没命中就把它踢掉」。但那个口径会把
+  // 「标价便宜、缓存读价极低、实际几乎不命中」的商家放进来：input 0.44 倍看着达标，
+  // 按实测 15% 命中率算真实成本是官网的 2.59 倍。门槛问的是「这家实际花你多少钱」，
+  // 就该用真实成本答。
+  //
+  // 只有真·实测才用真实成本判；没实测的商家交给「官网同等命中率」的标价倍率，
+  // 否则 unmeasured=0 的悲观兜底会把所有新商家一次性判死。
+  const hitIsMeasured = merchantCache.measured === true;
+  // 没实测时退回标价倍率：那是这家「按报价本该花多少」。
+  // 两侧必须用同一个命中率（merchant 与 official 都取 officialCacheHitRate），
+  // 否则比值会被「一边 0.95 一边 0」放大成好几倍。
+  const headlineHit = workload.officialCacheHitRate;
+  const headline = hitIsMeasured
+    ? priced
+    : priceModel(item, official, workload, { merchantCacheHitRate: headlineHit, officialCacheHitRate: headlineHit });
+  const gateRatio = hitIsMeasured ? priced.ratio : (headline.ok ? headline.ratio : priced.ratio);
   if (gateRatio > limit) {
     return { ok: false, reason: `effective-over-${Math.round(limit * 100)}pct`, priced };
   }
@@ -307,19 +352,22 @@ export function classifyListing(item, channel, cfg, options = {}) {
   }
 
   const p50 = toInt(item.p50_ttft_ms) || toInt(item.recent_p50_ms);
-  // A channel with a measured first-token median can qualify even if the site omits its latency.
+  // p50 只用于入选门槛；排序用的是下面算出来的 siteLatencyMs（站点最近一次真实响应耗时）。
 
   const rate = successRate(item.recent_success_rate);
   // 可靠性：有实测就用实测（贝叶斯平滑，先验取站点的群体失败率），没有才退回站点口径。
   const failRate = smoothedFailRate(measuredCalls, stat?.fails, 1 - rate);
   if (failRate * 100 > cfg.maxFailRate) return { ok: false, reason: 'high-fail-rate', priced };
-  // 延迟：实测首块延迟优先（至少两次采样），否则用站点 p50。
+  // 门槛：实测首块延迟优先（至少两次采样），否则用站点 p50。这一步只负责「能不能用」。
   const measuredP50 = stat && stat.p50Ms > 0 && stat.latencySamples >= 2 ? Math.round(stat.p50Ms) : 0;
   const effectiveP50 = measuredP50 || p50;
   if (effectiveP50 <= 0) return { ok: false, reason: 'no-latency', priced };
   if (effectiveP50 > cfg.hardP50Ms) return { ok: false, reason: 'too-slow', priced };
   const samples = toInt(item.sample_count);
   if (samples < cfg.minSamples) return { ok: false, reason: 'few-samples', priced };
+
+  // 打分用的延迟：站点最近一次真实响应耗时，没测过才退回 p50（并标明来源，别把「没测过」当「很快」）。
+  const siteLatency = siteLatencyOf(item, p50);
 
   const benefit = cacheBenefitOf(item, channel, options.cacheRates, cfg, options.measuredRates, options.now);
 
@@ -348,10 +396,14 @@ export function classifyListing(item, channel, cfg, options = {}) {
       merchantCacheHitMeasured: priced.merchantCacheHitMeasured,
       priceCategories: priced.categories,
       p50Ms: p50,
-      // 真正参与打分的延迟：有实测就用实测首块延迟
+      // 门槛用的有效延迟（实测首块 p50 优先，否则站点 p50）——只决定能不能入选
       realP50Ms: effectiveP50,
       latencySource: measuredP50 ? 'measured' : (toInt(item.p50_ttft_ms) > 0 ? 'site-ttft' : 'site'),
       siteLatencySource: toInt(item.p50_ttft_ms) > 0 ? 'site-ttft' : 'site',
+      // 真正参与打分的延迟：站点最近一次真实响应耗时（last_test_response_ms），
+      // 没测过才退回 p50（来源为 p50-fallback，一眼能看出这不是实测）
+      siteLatencyMs: siteLatency.value,
+      siteLatencyOrigin: siteLatency.source,
       outputRatio: useOutputRatio ? listingWorkload.outputToInput : null,
       outputRatioSource: useOutputRatio ? 'measured' : 'config',
       successRate: rate,
@@ -411,10 +463,35 @@ export function parseCandidates(payload, modelName, cfg, options = {}) {
  * 直接吃 effRatio（已含这两项），不再单列缓存分——同一件事算两遍会把「缓存好但
  * 标价略高」的商家过度压低。
  *
+/**
+ * 延迟口径：站点的**最近一次真实响应耗时**（listing.last_test_response_ms），
+ * 不是历史 p50。
+ *
+ * p50 是"过去 1000 次的中位数"，回答的是"这家历史上稳不稳"——它已经用在入选门槛
+ * （hardP50Ms）里了。排序要回答的是"现在打这家要等多久"，那是 last_test_response_ms。
+ * 两者混用会让"历史上一直很快、此刻很慢"的商家拿到不该有的延迟分。
+ *
+ * 站点没测过（值 <= 0）才退回 p50，并标记来源，避免把"没测过"当成"很快"。
+ */
+export function siteLatencyOf(item, fallbackP50 = 0) {
+  const tested = toInt(item?.last_test_response_ms);
+  if (tested > 0) return { value: tested, source: 'site-test' };
+  const p50 = toInt(item?.p50_ttft_ms) || toInt(item?.recent_p50_ms) || toInt(fallbackP50);
+  return p50 > 0 ? { value: p50, source: 'p50-fallback' } : { value: 0, source: 'none' };
+}
+
+/**
+ * 打分：真正决定你掏多少钱的是「实测命中率 × 报价 + 实测输出比」，所以成本项
+ * 直接吃 effRatio（已含这两项），不再单列缓存分——同一件事算两遍会把「缓存好但
+ * 标价略高」的商家过度压低。
+ *
  * 三个维度，分数越低越好：
- *   cost       = 对数归一的真实倍率（对数是为了让 2% 与 70% 的差别不被 0.02 淹没）
+ *   cost      = 对数归一的真实倍率（对数是为了让 2% 与 70% 的差别不被 0.02 淹没）
  *   failRate  = 平滑后的实测失败率（有实测用实测，没有用站点群体值）
- *   latency   = 实测首块延迟 / latencyRefMs（封顶 3 倍）
+ *   latency   = 站点最近一次真实响应耗时 / latencyRefMs（封顶 3 倍）
+ *
+ * **p50 不参与打分**，它只在 classifyListing 里当入选门槛。混进来会让"历史快、此刻慢"
+ * 的商家占便宜，而这正是 pick 之后要立刻承担的风险。
  *
  * 权重默认 成本 60 : 可靠性 30 : 延迟 10 —— 「便宜」仍然是主要目标，
  * 但一家 20% 失败率的便宜商家不该赢过 1% 失败率、贵 15% 的商家。
@@ -434,7 +511,8 @@ export function rankCandidates(candidates, cfg) {
       const cost = Number.isFinite(costRatio) && costRatio >= 0 ? normalizedCost(costRatio, cfg) : 1;
       const reliability = Math.min(Math.max(Number.isFinite(candidate.realFailRate)
         ? candidate.realFailRate : candidate.failRate, 0), 1);
-      const latencyMs = Number.isFinite(candidate.realP50Ms) ? candidate.realP50Ms : candidate.p50Ms;
+      // 只认站点延迟；p50 是门槛用的历史值，不进这里。
+      const latencyMs = Number.isFinite(candidate.siteLatencyMs) ? candidate.siteLatencyMs : 0;
       const latency = Math.min(Math.max(latencyMs, 0) / latencySpan, 3);
       const score = (priceWeight * cost + reliabilityWeight * reliability + latencyWeight * latency) / weightSum;
       return { ...candidate, score };
@@ -465,6 +543,8 @@ export function trimCandidates(ranked, limit = 24) {
     effRatio: Number((candidate.effRatio ?? candidate.ratio ?? 0).toFixed(4)),
     cnyPerMillion: Number((candidate.cnyPerMillion ?? 0).toFixed(3)),
     p50Ms: candidate.p50Ms,
+    siteLatencyMs: candidate.siteLatencyMs ?? null,
+    siteLatencyOrigin: candidate.siteLatencyOrigin || 'none',
     failRate: candidate.failRate,
     successRate: Number(candidate.successRate.toFixed(4)),
     cacheRate24h: Number.isFinite(candidate.cacheRate24h) ? Number(candidate.cacheRate24h.toFixed(4)) : null,
@@ -479,7 +559,12 @@ export function trimCandidates(ranked, limit = 24) {
   }));
 }
 
-/** Cut the eligible pool once, after exclusions; score only the faster half. */
+/**
+ * 先按 p50 砍掉慢的一半，再对剩下的一半打分。
+ *
+ * p50 在这里的作用是**入选**，不是评分：它筛掉「历史上一贯慢」的商家，剩下的交给
+ * rankCandidates 用真实成本和站点实时延迟排序。两层分开，p50 就不会和延迟分重复计罚。
+ */
 export function rankFastestHalf(rows, cfg) {
   const eligible = rows.filter(row => row.realP50Ms > 0 && row.realP50Ms <= cfg.hardP50Ms
     && row.realFailRate * 100 <= cfg.maxFailRate);

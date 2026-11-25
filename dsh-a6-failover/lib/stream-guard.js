@@ -338,7 +338,7 @@ export async function* guardedStream({
         }
         emit({ type: 'switch-unavailable', provider: route.provider, reason: planned?.reason || 'no-candidate' });
         if (planned?.reason === '保留平台已有的固定商家') {
-          const failure = { code: 'A6_EXISTING_PIN', message: `${verdict.message}。平台已有固定商家，插件无法确认归属；要允许自动换商，请先核对该模型的固定记录。` };
+          const failure = { code: 'A6_EXISTING_PIN', message: `${verdict.message}。平台已有固定商家，插件无法确认归属；要允许自动换商，请开启「接管站点已有固定商家」，或先核对该模型的固定记录。` };
           yield errorFinish(failure);
           return;
         }
