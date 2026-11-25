@@ -1,0 +1,12 @@
+# dsh-a6-failover 组合包 patch
+#
+# 插一行就够：id 固定为 a6-failover，config 见 README。
+# name 必须是**裸包名**——浏览器半侧（设置页）只挂在说明符恰为包名的那一行上，
+# 写成文件路径的话设置页不会出现（宿主半侧照常工作）。
+- insert:
+    - id: a6-failover
+      name: dsh-a6-failover
+      config:
+        enabled: true
+        providerPattern: '^a6api'
+        defaultControlBase: https://a6api.vip

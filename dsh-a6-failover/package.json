@@ -1,0 +1,82 @@
+{
+  "name": "dsh-a6-failover",
+  "version": "0.6.1",
+  "description": "DSH 插件：A6API 等 new-api 中转站的模型响应异常时，主动切换商家并重跑；按实际用量折算价格，超过官网 70% 的商家直接忽略。",
+  "icon": "assets/a6-icon.png",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "assets/a6-icon.png",
+    "scripts/install.mjs",
+    "scripts/check-encoding.mjs",
+    "scripts/self-test.mjs",
+    "scripts/guard-test.mjs",
+    "scripts/delivery-test.mjs",
+    "scripts/routing-test.mjs",
+    "scripts/package-release.mjs"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  },
+  "engines": {
+    "node": ">=18.17.0",
+    "dsh": ">=0.2.1-rc.2 <0.4.0-0"
+  },
+  "scripts": {
+    "test": "node --unhandled-rejections=strict --test scripts/self-test.mjs scripts/guard-test.mjs scripts/routing-test.mjs scripts/delivery-test.mjs",
+    "self-test": "node scripts/self-test.mjs",
+    "package:release": "node scripts/package-release.mjs"
+  },
+  "license": "MIT",
+  "author": "HSHSir",
+  "homepage": "https://github.com/HSHSir/dsh-plugins/tree/main/dsh-a6-failover#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HSHSir/dsh-plugins.git",
+    "directory": "dsh-a6-failover"
+  },
+  "bugs": {
+    "url": "https://github.com/HSHSir/dsh-plugins/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis",
+    "a6api",
+    "new-api",
+    "failover",
+    "router",
+    "provider",
+    "cost",
+    "usage",
+    "cache",
+    "fallback",
+    "中转站",
+    "换商家",
+    "费用"
+  ],
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  }
+}
