@@ -191,6 +191,14 @@ window.__ModuleLoader__.load({
         "min": 0
       },
       {
+        "key": "minContextWindowTokens",
+        "label": "上下文窗口下限（token，0 = 不过滤）",
+        "type": "number",
+        "hint": "低于这个窗口的商家会被淘汰，例如填 300000 只留 300K 以上。注意：站点数据里没有商家窗口字段，只有商家自己在描述里写明的（如「1M上下文」「25万上下文」）和我们撞过上下文超限学到的才作数；没有证据的商家一律保留，不会被误杀。",
+        "step": 10000,
+        "min": 0
+      },
+      {
         "key": "cacheHitRate",
         "label": "成本估算 · 缓存命中率",
         "type": "number",
@@ -266,7 +274,7 @@ window.__ModuleLoader__.load({
   {
     "title": "3 · 切换与等待",
     "open": false,
-    "description": "等待时间按每次模型请求计算；重试、换商和等待新商家首块共享总预算。控制面整体不可用时会自动降级到平台默认路由，不让整轮对话失败。",
+    "description": "等待时间按每次尝试独立计算：原路一次、每次换到的商家各一次，不再共享总预算。换商次数由「单次请求最多换商」控制。控制面整体不可用时会自动降级到平台默认路由，不让整轮对话失败。",
     "fields": [
       {
         "key": "controlUnavailableMs",
@@ -289,15 +297,15 @@ window.__ModuleLoader__.load({
       {
         "key": "firstResponseTimeoutMs",
         "label": "原路无响应多久开始换商（秒）",
-        "hint": "默认 30 秒；只统计有效首块，心跳不算。超过总预算时以总预算为准。",
+        "hint": "默认 30 秒；只统计有效首块，心跳不算。到点才开始换商，所以首块预算要大于它才有意义。",
         "type": "number",
         "scale": 1000,
         "step": 1
       },
       {
         "key": "firstResponseBudgetMs",
-        "label": "首块等待总预算（秒）",
-        "hint": "默认 180 秒，最多 180 秒。包含原路重试、换商和新商家响应；并非整个任务时长。",
+        "label": "换到新商家后等首块的上限（秒）",
+        "hint": "每次换到的商家各自计时，互不共享：给 60 就是每家新商家最多等 60 秒。默认 180 秒，上限 180 秒。",
         "type": "number",
         "scale": 1000,
         "step": 1
@@ -485,6 +493,7 @@ window.__ModuleLoader__.load({
       latencyRefMs: [1, Number.MAX_SAFE_INTEGER], maxFailRate: [0, 100],
       controlTimeoutMs: [1000, 180000],
       controlUnavailableMs: [0, 3600000], controlProbeMs: [5000, 600000],
+      minContextWindowTokens: [0, 10000000],
     };
     for (const group of GROUPS) for (const field of group.fields) {
       if (field.type !== 'number') continue;
@@ -852,7 +861,7 @@ window.__ModuleLoader__.load({
                 : null,
               h('table', { style: S.table },
                 h('thead', null, h('tr', null,
-                  ['排名 / 商家', '总分 ↓', '实际/官方', '¥/M输入', '缓存数据', 'p50', '成功率'].map((label) => h('th', { key: label, style: S.th }, label)))),
+                  ['排名 / 商家', '总分 ↓', '实际/官方', '¥/M输入', '缓存数据', '上下文', 'p50', '成功率'].map((label) => h('th', { key: label, style: S.th }, label)))),
                 h('tbody', null, (channel.candidates || []).map((candidate, index) => h('tr', { key: candidate.channelId },
                   h('td', { style: S.td }, `${index + 1}. ${candidate.channelId} ${candidate.channelName || ''}`.trim()),
                    h('td', { style: S.td }, Number.isFinite(candidate.score) ? candidate.score.toFixed(4) : '—'),
@@ -866,6 +875,9 @@ window.__ModuleLoader__.load({
                           : candidate.cacheSource === 'cache-read-cost' && Number.isFinite(candidate.cacheReadRatio)
                             ? `读价为官网的 ${pct(candidate.cacheReadRatio)}`
                            : '无数据'),
+                  h('td', { style: S.td }, Number(candidate.contextWindow) > 0
+                    ? `${Math.round(Number(candidate.contextWindow) / 1000)}K${candidate.contextWindowSource === 'measured' ? '（实测）' : ''}`
+                    : '未知'),
                   h('td', { style: S.td }, `${candidate.p50Ms} ms`),
                   h('td', { style: S.td }, pct(candidate.successRate))))))))),
 

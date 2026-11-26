@@ -11,7 +11,7 @@ import {
 } from './a6.js';
 import { createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
-import { cacheRatesFromSubscriptions, rankFastestHalf, refreshCandidateCache } from './selector.js';
+import { belowContextFloor, cacheRatesFromSubscriptions, rankFastestHalf, refreshCandidateCache } from './selector.js';
 import { guessControlBase, isManagedProvider } from './config.js';
 
 function normBase(url) {
@@ -84,7 +84,7 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
     'merchantCacheHitRate', 'unmeasuredMerchantCacheHitRate', 'outputToInputRatio', 'useMeasuredOutputRatio',
     'outputRatioMinSamples', 'cacheWriteShare', 'assumeMissingCacheAsInput', 'fxCnyPerUsd', 'hardP50Ms',
     'maxFailRate', 'minSamples', 'priceWeight', 'reliabilityWeight', 'cacheWeight', 'cacheFallbackDiscount',
-    'cacheMeasureMinSamples', 'latencyWeight', 'successWeight', 'latencyRefMs'];
+    'cacheMeasureMinSamples', 'latencyWeight', 'successWeight', 'latencyRefMs', 'minContextWindowTokens'];
   let quoteConfig = Object.fromEntries(quoteKeys.map((key) => [key, cfg[key]]));
   let selectionKey = JSON.stringify([3, ...Object.values(quoteConfig)]);
 
@@ -344,8 +344,7 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
 
   function subscriptionRates(site, account, force) {
     if (cfg.cacheWeight === 0) return null;
-    const existing = subscriptions.get(account);
-    if (existing && (!force || !existing.done) && Date.now() < existing.until) return existing.task;
+    const existing = subscriptions.get(account);    if (existing && (!force || !existing.done) && Date.now() < existing.until) return existing.task;
     const entry = { until: Date.now() + 60000, done: false };
     // 这里原本只给 2000ms。订阅列表虽不大，但它和商家表是并发拉的，
     // 站慢时 2 秒连 TLS 握手都不够，会一直返回 null（于是缓存率永远缺数据）。
@@ -384,7 +383,8 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
       execArgv: [],
       workerData: { text, model, cfg: quoteConfig, cacheRates,
         measuredRates: store.usageRates(model, site.controlBase),
-        measuredStats: store.channelStats(model, site.controlBase) },
+        measuredStats: store.channelStats(model, site.controlBase),
+        contextWindows: store.contextWindows(model, site.controlBase) },
     });
     const result = new Promise((resolve, reject) => {
       worker.once('message', resolve);
@@ -429,7 +429,11 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
       const known = badChannels(site.controlBase, model);
       const measured = store.usageRates(model, site.controlBase);
       const stats = store.channelStats(model, site.controlBase);
-      return rankFastestHalf(rows.filter((row) => !excludeChannels.has(row.channelId) && !known.has(row.channelId))
+      // 上下文太小的商家的剔除放在这里（而不是只在解析时）：实测到的窗口上限是
+      // 请求过程中学到的，缓存表里的老候选也要按最新知识重新筛。
+      const windows = store.contextWindows(model, site.controlBase);
+      return rankFastestHalf(rows.filter((row) => !excludeChannels.has(row.channelId) && !known.has(row.channelId)
+        && !belowContextFloor(row, windows, cfg))
         .map((row) => refreshCandidateCache(row, cfg, measured, Date.now(), stats)), cfg);
     };
     // 表过期/不兼容时先触发后台刷新（不 await），再用旧表顶上。
@@ -458,7 +462,11 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
       const known = badChannels(site.controlBase, model);
       const measured = store.usageRates(model, site.controlBase);
       const stats = store.channelStats(model, site.controlBase);
-      return rankFastestHalf(rows.filter((row) => !excludeChannels.has(row.channelId) && !known.has(row.channelId))
+      // 上下文太小的商家的剔除放在这里（而不是只在解析时）：实测到的窗口上限是
+      // 请求过程中学到的，缓存表里的老候选也要按最新知识重新筛。
+      const windows = store.contextWindows(model, site.controlBase);
+      return rankFastestHalf(rows.filter((row) => !excludeChannels.has(row.channelId) && !known.has(row.channelId)
+        && !belowContextFloor(row, windows, cfg))
         .map((row) => refreshCandidateCache(row, cfg, measured, Date.now(), stats)), cfg);
     };
     if (!force && compatible && age < Math.min(cfg.channelCacheTtlMs, QUOTE_MAX_AGE_MS)) return filter(cached.candidates);

@@ -35,6 +35,82 @@ const CACHE_SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
  */
 const CACHE_RATE_FIELDS = ['cache_hit_rate_bps', 'cache_hit_rate_24h', 'recent_cache_hit_rate', 'cache_hit_rate', 'cache_rate_24h'];
 
+/**
+ * 商家上下文窗口。
+ *
+ * 实测（2026-11-26，a6api.vip）：`/api/marketplace/channels` 的 listing **没有任何**
+ * context/window 字段（45 个字段全部核对过），channel 层也没有，`/api/pricing` 的
+ * long_context_pricing.threshold 是**长上下文计费档位**而不是窗口上限，控制台前端也
+ * 不读 listing 上的能力字段来判定窗口。所以站点**给不出**可信的商家窗口值。
+ *
+ * 能拿到证据的只有两处，按可信度排序：
+ *   1. `measured`：我们自己的请求在这条路由上撞过上下文失败 → 它的窗口 ≲ 当时的 token 数；
+ *   2. `declared`：商家在描述/频道名里自己写明的大小（"1M上下文"、"25万上下文"、"128K"）。
+ *
+ * 两者都没有时**不判淘汰**——「不知道」不等于「小」，按未知当小会把绝大多数商家一次性打死。
+ */
+const CONTEXT_WINDOW_FIELDS = ['context_window', 'context_length', 'max_context_length',
+  'max_context_tokens', 'context_window_tokens', 'max_context'];
+
+const UNIT_SCALE = { k: 1000, m: 1000000, '万': 10000, '千': 1000 };
+// 数字在前："1M上下文"、"500k 上下文"、"25万上下文"、"250K context"
+const CONTEXT_BEFORE = /(\d+(?:\.\d+)?)\s*([kKmM万千])?\s*(?:tokens?)?\s*(?:上下文|context)/g;
+// 关键词在前："上下文 128K"、"Context > 128K"
+const CONTEXT_AFTER = /(?:上下文|context)\s*(?:窗口|window|长度|length)?\s*[:：>＞]?\s*(\d+(?:\.\d+)?)\s*([kKmM万千])?/gi;
+
+function scaleContextNumber(value, unit) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  const key = String(unit || '').toLowerCase();
+  if (UNIT_SCALE[key]) return Math.round(n * UNIT_SCALE[key]);
+  // 没有单位：只有大数字才当 token 数（"上下文 300000"），小数字（"1 个上下文"）不算。
+  return n >= 1000 ? Math.round(n) : 0;
+}
+
+/** 商家自己声明的上下文窗口（取文中最大的那个），没有就返回 0。 */
+export function declaredContextWindow(item, channel) {
+  for (const field of CONTEXT_WINDOW_FIELDS) {
+    const value = toInt(item?.[field]) || toInt(channel?.[field]);
+    if (value > 0) return value;
+  }
+  const texts = [item?.description, item?.channel_name, channel?.channel_name, item?.supplier_name];
+  let best = 0;
+  for (const raw of texts) {
+    const text = String(raw || '');
+    if (!text || !/\d/.test(text)) continue;
+    for (const pattern of [CONTEXT_BEFORE, CONTEXT_AFTER]) {
+      pattern.lastIndex = 0;
+      let match;
+      while ((match = pattern.exec(text)) !== null) {
+        const size = scaleContextNumber(match[1], match[2]);
+        if (size > best) best = size;
+      }
+    }
+  }
+  return best;
+}
+
+/**
+ * 这条候选的上下文窗口下限：有实测上限就用实测，否则用商家声明值，都没有返回 0（未知）。
+ * @param {object} candidate 候选（含 channelId 与 contextWindow）
+ * @param {Map<number, {atMost:number}>} [measured] store.contextWindows 的结果
+ */
+export function contextWindowFloor(candidate, measured) {
+  const declared = Number(candidate?.contextWindow) || 0;
+  const learned = measured instanceof Map ? measured.get(Number(candidate?.channelId)) : null;
+  const atMost = Number(learned?.atMost) || 0;
+  if (declared > 0 && atMost > 0) return Math.min(declared, atMost);
+  return declared || atMost;
+}
+
+/** 已知窗口是否小于配置下限。未知（0）一律放行。 */
+export function belowContextFloor(candidate, measured, cfg) {
+  const floor = Number(cfg?.minContextWindowTokens) || 0;
+  if (!(floor > 0)) return false;
+  const known = contextWindowFloor(candidate, measured);
+  return known > 0 && known < floor;
+}
+
 function toInt(value) {
   const n = Number(value);
   return Number.isFinite(n) ? Math.trunc(n) : 0;
@@ -295,6 +371,14 @@ export function classifyListing(item, channel, cfg, options = {}) {
   if (channelId <= 0) return { ok: false, reason: 'bad-row' };
   if (excludeChannels.has(channelId)) return { ok: false, reason: 'failed-this-call' };
   if (badChannels.has(channelId)) return { ok: false, reason: 'known-bad' };
+  // 上下文太小的商家直接不要：长任务塞不进去，重开多少次都是白花钱。
+  // 只有「已知」窗口才判：站点不提供窗口字段，未声明/未实测过的一律放行。
+  const declared = declaredContextWindow(item, channel);
+  if (belowContextFloor(
+    { channelId, contextWindow: declared },
+    options.contextWindows,
+    cfg,
+  )) return { ok: false, reason: 'context-too-small' };
 
   // 商家侧命中率：优先用我们自己请求出来的实测值——中转站上游经常换池，
   // 「报价里说缓存很便宜」和「你的请求真的命中缓存」是两件事。
@@ -407,6 +491,9 @@ export function classifyListing(item, channel, cfg, options = {}) {
       outputRatio: useOutputRatio ? listingWorkload.outputToInput : null,
       outputRatioSource: useOutputRatio ? 'measured' : 'config',
       successRate: rate,
+      // 商家声明的上下文窗口（token）：0 = 未声明，站点不提供这个值。
+      contextWindow: declared,
+      contextWindowSource: declared > 0 ? 'declared' : 'unknown',
       ...cacheFields(benefit),
       cacheReadRatio: priced.cacheReadRatio,
       sampleCount: samples,

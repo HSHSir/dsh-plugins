@@ -20,6 +20,7 @@ const load = (rel) => import(pathToFileURL(path.join(root, rel)).href);
 
 const {
   cacheBenefitOf, measuredHitOf, parseCandidates, rankCandidates, officialWithOverride,
+  declaredContextWindow, belowContextFloor, contextWindowFloor,
 } = await load('lib/selector.js');
 const { normalizeWorkload, priceModel } = await load('lib/pricing.js');
 const { createStore } = await load('lib/state.js');
@@ -155,6 +156,50 @@ eq('没站点数据的仍用实测', rankedSite.find((c) => c.channelId === 2).c
 
   // 完全没有实测的新商家：不能因为 unmeasured=0 就被一次性打死
   eq('未实测的新商家仍按标价判定，不会全灭', parseCandidates(payloadOne, 'm1', cfg, {}).candidates.length, 1);
+}
+
+// ---- 3c. 上下文窗口下限：只淘汰「有证据」的小窗口商家 ----
+{
+  // 站点不提供窗口字段，只能从商家自述里读。
+  eq('自述 1M上下文', declaredContextWindow({ description: '多模态， 1M上下文，  5亿TPM' }), 1000000);
+  eq('自述 500k 上下文', declaredContextWindow({ description: '500k 上下文，账号反代' }), 500000);
+  eq('自述 25万上下文', declaredContextWindow({ description: '25万上下文, 250K context' }), 250000);
+  eq('自述 128K', declaredContextWindow({ description: '长上下文 128K' }), 128000);
+  eq('关键词在前 上下文 300000', declaredContextWindow({ description: '上下文 300000' }), 300000);
+  eq('没写窗口就是未知', declaredContextWindow({ description: '高速稳定，缓存98%' }), 0);
+  eq('空对象不报错', declaredContextWindow({}, null), 0);
+  eq('认字段优先', declaredContextWindow({ description: '128K上下文', context_window: 200000 }), 200000);
+
+  const floorCfg = normalizeConfig({ minContextWindowTokens: 300000 });
+  const windows = new Map([[7, { atMost: 200000 }]]);
+
+  // 声明 128K 的商家在 300K 门槛下被淘汰
+  const small = { channel_id: 5, listings: [mkListing(5, 100000, 2000)] };
+  small.listings[0].description = '上下文 128K，便宜';
+  const smallVerdict = parseCandidates({ data: [small] }, 'm1', floorCfg, {});
+  eq('声明 128K 的商家被上下文门槛淘汰', smallVerdict.candidates.length, 0);
+  eq('淘汰原因记为 context-too-small', Object.keys(smallVerdict.rejected)[0], 'context-too-small');
+
+  // 没有任何窗口证据的商家保留——「不知道」不等于「小」
+  eq('没有窗口证据的商家不会被误杀', parseCandidates(payload, 'm1', floorCfg, {}).candidates.length, 2);
+
+  // 实测学到的窗口上限也能淘汰（撞过 200K 上限的商家）
+  eq('实测学到的窗口上限生效', parseCandidates({ data: [{ channel_id: 7, listings: [mkListing(7, 100000, 2000)] }] }, 'm1', floorCfg,
+    { contextWindows: windows }).candidates.length, 0);
+  // 未启用门槛时一律放行
+  eq('门槛为 0 时不过滤', parseCandidates({ data: [{ channel_id: 7, listings: [mkListing(7, 100000, 2000)] }] }, 'm1', cfg,
+    { contextWindows: windows }).candidates.length, 1);
+
+  // 声明值与实测值冲突时取更小（更悲观）的那个
+  eq('声明 1M 但实测只认 200K', contextWindowFloor({ channelId: 7, contextWindow: 1000000 }, new Map([[7, { atMost: 200000 }]])), 200000);
+  eq('只有声明值时用声明值', contextWindowFloor({ channelId: 8, contextWindow: 1000000 }, new Map()), 1000000);
+  eq('未知窗口不判淘汰', belowContextFloor({ channelId: 9, contextWindow: 0 }, null, floorCfg), false);
+
+  // 候选里带出窗口，供设置页显示
+  const one = parseCandidates({ data: [{ channel_id: 11, listings: [{ ...mkListing(11, 100000, 2000), description: '1M 上下文' }] }] }, 'm1', cfg, {}).candidates[0];
+  eq('候选带出窗口大小', one.contextWindow, 1000000);
+  eq('候选标出窗口来源', one.contextWindowSource, 'declared');
+  eq('没有声明时标未知', parseCandidates(payload, 'm1', cfg, {}).candidates[0].contextWindowSource, 'unknown');
 }
 
 // ---- 3d. normalizeWorkload 必须幂等（二次规范化不能把假设值清成 0）----

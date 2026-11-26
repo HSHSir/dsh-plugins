@@ -50,14 +50,15 @@ test('same-route retries share the initial clock and heartbeat does not reset it
   assert.deepEqual(f.seen, [text, stop]);
 });
 
-test('late first output after a blocked event loop misses its deadline even before the timer fires', async (t) => {
+test('late first output misses its own attempt deadline even before the timer fires', async (t) => {
   let now = 1000;
   t.mock.method(performance, 'now', () => now);
   const delayed = () => (async function* () { now += 65; yield text; })();
-  const f = fixture([delayed], { firstResponseTimeoutMs: 50, firstResponseBudgetMs: 60 });
-  await assert.rejects(f.run, { code: 'A6_FIRST_RESPONSE_BUDGET' });
-  assert.equal(f.seen.length, 0);
-  assert.equal(f.switches.length, 0);
+  const f = fixture([delayed, () => chunks(text, stop)], { firstResponseTimeoutMs: 50, firstResponseBudgetMs: 60 });
+  await f.run();
+  assert.deepEqual(f.seen, [text, stop]);
+  assert.equal(f.switches.length, 1);
+  assert.equal(f.failures[0].code, 'A6_FIRST_RESPONSE_TIMEOUT');
 });
 
 test('late upstream next and cleanup rejections remain observed after a deadline', async () => {
@@ -66,26 +67,31 @@ test('late upstream next and cleanup rejections remain observed after a deadline
     next: () => new Promise((_, reject) => { rejectRead = reject; }),
     return: () => Promise.reject(new Error('late cleanup')),
   }; } });
-  const f = fixture([late], { firstResponseTimeoutMs: 10, firstResponseBudgetMs: 10 });
-  await assert.rejects(f.run, { code: 'A6_FIRST_RESPONSE_BUDGET' });
+  const f = fixture([late], { firstResponseTimeoutMs: 10, firstResponseBudgetMs: 10, maxSwitchesPerCall: 0 });
+  await assert.rejects(f.run, { code: 'A6_FIRST_RESPONSE_TIMEOUT' });
   rejectRead(new Error('late read'));
   await sleep(0);
 });
 
-test('control plane cannot consume more than remaining total budget', async () => {
+test('control plane has its own timeout and cannot eat an attempt budget', async () => {
   let switchSignal;
-  const f = fixture([stuck], { firstResponseTimeoutMs: 20, firstResponseBudgetMs: 65 }, {
+  const f = fixture([stuck], { firstResponseTimeoutMs: 20, firstResponseBudgetMs: 65, controlTimeoutMs: 40 }, {
     planSwitch: ({ signal }) => { switchSignal = signal; return never(); },
   });
-  await assert.rejects(f.run, { code: 'A6_FIRST_RESPONSE_BUDGET' });
+  const started = Date.now();
+  await assert.rejects(f.run, { code: 'A6_FIRST_RESPONSE_TIMEOUT' });
   assert.ok(switchSignal.aborted);
   assert.equal(f.attempts.length, 1);
+  assert.ok(Date.now() - started < 1000, 'control wait must be bounded by controlTimeoutMs');
 });
 
-test('replacement merchant shares remaining absolute first response budget', async () => {
+test('each replacement merchant gets its own full first response budget', async () => {
   const f = fixture([stuck, stuck], { firstResponseTimeoutMs: 20, firstResponseBudgetMs: 55 });
   await assert.rejects(f.run, { code: 'A6_FIRST_RESPONSE_BUDGET' });
   assert.equal(f.switches.length, 1);
+  // 第一家用的是 firstResponseTimeoutMs，替换商家拿到的是完整的 firstResponseBudgetMs
+  assert.equal(f.failures[0].code, 'A6_FIRST_RESPONSE_TIMEOUT');
+  assert.equal(f.failures[1].code, 'A6_FIRST_RESPONSE_BUDGET');
   assert.ok(f.attempts.every(a => a.opts.signal.aborted));
 });
 

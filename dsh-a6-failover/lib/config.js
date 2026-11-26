@@ -40,6 +40,14 @@ export const DEFAULTS = Object.freeze({
   firstResponseBudgetMs: 180000,
   streamStallTimeoutMs: 30000,
   sameRouteRetries: 1,
+  /**
+   * 商家模型上下文窗口的下限（token）。低于它的商家不参与选商。
+   *
+   * 默认 0 = 不过滤。站点**不提供**任何窗口字段（见 selector.js 的说明），所以这个门槛
+   * 只用「有证据的窗口」：商家自己在描述里写明的（"1M上下文"/"25万上下文"），以及我们
+   * 自己请求撞过上下文超限学到的上限。没有证据的商家一律放行——「不知道」不等于「小」。
+   */
+  minContextWindowTokens: 0,
 
   // ---- 切换预算（防止在商家之间反复横跳把一轮对话拖死） ----
   /** 单次模型调用最多切换几次商家。 */
@@ -328,6 +336,7 @@ export function normalizeConfig(raw = {}) {
     firstResponseBudgetMs: num(src.firstResponseBudgetMs, DEFAULTS.firstResponseBudgetMs, 1, 180000),
     streamStallTimeoutMs: num(src.streamStallTimeoutMs, DEFAULTS.streamStallTimeoutMs, 1, 600000),
     sameRouteRetries: num(src.sameRouteRetries, DEFAULTS.sameRouteRetries, 0, 1),
+    minContextWindowTokens: num(src.minContextWindowTokens, DEFAULTS.minContextWindowTokens, 0, 10000000),
 
     maxSwitchesPerCall: num(src.maxSwitchesPerCall, DEFAULTS.maxSwitchesPerCall, 0, 6),
     maxSwitchesPerHour: num(src.maxSwitchesPerHour, DEFAULTS.maxSwitchesPerHour, 0, 500),
@@ -417,6 +426,7 @@ export function defaultsForForm() {
     firstResponseBudgetMs: d.firstResponseBudgetMs,
     streamStallTimeoutMs: d.streamStallTimeoutMs,
     sameRouteRetries: d.sameRouteRetries,
+    minContextWindowTokens: d.minContextWindowTokens,
     enabled: d.enabled,
     providerPattern: d.providerPattern,
     providers: [],

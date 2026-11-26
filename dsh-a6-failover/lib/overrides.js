@@ -24,6 +24,7 @@ export const EDITABLE_KEYS = Object.freeze([
   'priceWeight', 'reliabilityWeight', 'cacheWeight', 'cacheFallbackDiscount', 'cacheMeasureMinSamples', 'latencyWeight', 'successWeight',
   // 延迟与质量门槛
   'latencyRefMs', 'hardP50Ms', 'maxFailRate', 'minSamples',
+  'minContextWindowTokens',
   // 切换策略
   'firstResponseTimeoutMs', 'firstResponseBudgetMs', 'streamStallTimeoutMs', 'sameRouteRetries',
   'maxSwitchesPerCall', 'maxSwitchesPerHour', 'degradeAfterFailures', 'degradeCooldownMs', 'switchDedupeMs',
@@ -41,6 +42,7 @@ const NUMERIC = new Set([
   'maxEffectiveRatio', 'cacheHitRate', 'officialCacheHitRate', 'merchantCacheHitRate', 'unmeasuredMerchantCacheHitRate',
   'outputToInputRatio', 'outputRatioMinSamples', 'cacheWriteShare', 'maxPriceRatio', 'fxCnyPerUsd',
   'priceWeight', 'reliabilityWeight', 'cacheWeight', 'cacheMeasureMinSamples', 'latencyWeight', 'successWeight', 'latencyRefMs', 'hardP50Ms', 'maxFailRate', 'minSamples',
+  'minContextWindowTokens',
   'firstResponseTimeoutMs', 'firstResponseBudgetMs', 'streamStallTimeoutMs', 'sameRouteRetries',
   'maxSwitchesPerCall', 'maxSwitchesPerHour', 'degradeAfterFailures', 'degradeCooldownMs', 'switchDedupeMs',
   'channelCacheTtlMs', 'controlTimeoutMs', 'contextHeadroomRatio', 'maxContextSwitchesPerHour',

@@ -24,7 +24,7 @@ import {
   clearOverrides, forDisplay, loadOverrides, mergeOverrides, overridesPath, saveOverrides,
 } from './overrides.js';
 import {
-  CONTEXT_FAILURE_CODES, findContextRoute, parseContextNumbers,
+  CONTEXT_FAILURE_CODES, findContextRoute, parseContextCapacity, parseContextNumbers,
 } from './context-failover.js';
 
 export const name = 'a6-failover';
@@ -310,6 +310,27 @@ export function apply(ctx, config) {
     }
 
     const numbers = parseContextNumbers(failure.message);
+    /**
+     * 记下「这条路由装不下这么多」的实测证据——但**只认上游明确说出的上限**。
+     *
+     * 注意别搞错：DSH 自己的压缩失败（estimated >= threshold）只说明**配置的窗口**偏小，
+     * 不能推出商家窗口小——阈值本来就是 contextWindow 减预留算出来的。所以只认
+     * 「maximum context length is N」这类上游直说的数字，其它一律不学。
+     */
+    const capacity = parseContextCapacity(failure.message);
+    if (capacity > 0) {
+      const failed = activeSwitcher.activeChannel(current?.provider, current?.model);
+      if (failed?.channelId) {
+        store.noteContextLimit({
+          controlBase: failed.controlBase, model: current.model,
+          channelId: failed.channelId, atMost: capacity,
+        });
+        store.logEvent({
+          type: 'context-limit-learned', provider: current.provider, model: current.model,
+          channelId: failed.channelId, atMost: capacity, code,
+        });
+      }
+    }
     let reserve = 0;
     let currentWindow = 0;
     if (llmRuntime && current?.provider && current?.model) {

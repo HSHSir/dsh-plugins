@@ -146,8 +146,9 @@ function formatRule(chunk) {
 
 const timeoutMessages = {
   A6_FIRST_RESPONSE_TIMEOUT: '原路等待有效首块超时',
-  A6_FIRST_RESPONSE_BUDGET: '等待有效首块的总预算已用尽',
+  A6_FIRST_RESPONSE_BUDGET: '本次尝试等待有效首块超时（每次换商独立计时）',
   A6_STREAM_STALL: '模型流在有效输出后持续无进展',
+  A6_SWITCH_TIMEOUT: '等待站点分配商家超时（不计入首块预算）',
 };
 
 function timedScope(parent, initialLimit, initialCode) {
@@ -207,14 +208,27 @@ export async function* guardedStream({
   let retries = 0;
   let requestId;
   const start = performance.now();
-  const totalDeadline = start + (cfg.firstResponseBudgetMs ?? 180000);
-  const originalDeadline = Math.min(totalDeadline, start + (cfg.firstResponseTimeoutMs ?? 30000));
+  /**
+   * 首块预算按「每次尝试」独立计时，而不是整轮共享一笔。
+   *
+   * 共享预算的现场代价：一个 120 万 token 的超长请求在替换商家上慢慢等，把整轮预算吃光，
+   * 后面的换商连尝试的机会都没有，界面直接报「等待有效首块的总预算已用尽」。
+   * 现在原路用 firstResponseTimeoutMs，每次替换商家各自拿 firstResponseBudgetMs。
+   * 总等待时间的上限改由 maxSwitchesPerCall 控制（次数而不是时间）。
+   */
+  const budgetMs = Math.max(1, Number(cfg.firstResponseBudgetMs) || 60000);
+  const timeoutMs = Math.max(1, Number(cfg.firstResponseTimeoutMs) || 30000);
   const stallMs = cfg.streamStallTimeoutMs ?? 30000;
+  // 原路（含它的同路重试）共用一笔 firstResponseTimeoutMs：用户设的「30 秒无响应就换商」
+  // 必须真的在 30 秒后开始换商，不能被同路重试无限续命。
+  const originalDeadline = start + Math.min(timeoutMs, budgetMs);
 
   for (;;) {
     signal?.throwIfAborted();
-    const deadline = switches ? totalDeadline : originalDeadline;
-    const scope = timedScope(signal, deadline, deadline === totalDeadline ? 'A6_FIRST_RESPONSE_BUDGET' : 'A6_FIRST_RESPONSE_TIMEOUT');
+    // 每次尝试自己的截止时间：还没换商家时沿用原路那一笔，换过之后每家新商家各自新计时。
+    const deadline = switches ? performance.now() + budgetMs : originalDeadline;
+    const deadlineCode = switches ? 'A6_FIRST_RESPONSE_BUDGET' : 'A6_FIRST_RESPONSE_TIMEOUT';
+    const scope = timedScope(signal, deadline, deadlineCode);
     const attemptOptions = { ...options, ...route, signal: scope.signal };
     attempt += 1;
     let rule;
@@ -333,9 +347,8 @@ export async function* guardedStream({
     if (verdict.retryable) {
       const summary = { kind: verdict.kind, code: safeFailureCode(verdict.code) };
       emit({ type: 'attempt-failed', ...route, verdict: summary });
-      if (performance.now() >= totalDeadline || verdict.code === 'A6_FIRST_RESPONSE_BUDGET') {
-        throw streamError(null, { code: 'A6_FIRST_RESPONSE_BUDGET', message: timeoutMessages.A6_FIRST_RESPONSE_BUDGET });
-      }
+      // 不再有整轮总预算：这一层只保留「本次尝试已经用尽」的语义，
+      // 后续换商次数由 maxSwitchesPerCall 限制。
       if (!verdict.switchImmediately
         && retries < (cfg.sameRouteRetries ?? 1) && performance.now() < deadline && verdict.code !== 'A6_FIRST_RESPONSE_TIMEOUT') {
         retries += 1;
@@ -347,7 +360,10 @@ export async function* guardedStream({
       } else {
         failedRoutes.add(`${route.provider}|${route.model}`);
         let planned;
-        const control = timedScope(signal, totalDeadline, 'A6_FIRST_RESPONSE_BUDGET');
+        // 控制面单独计时：它不该吃掉任何一次尝试的首块预算，
+        // 更不该因为控制面慢就把整个请求判死——等不到候选只是这次换不了，交给上层降级。
+        const controlLimit = performance.now() + Math.max(200, Number(cfg.controlTimeoutMs) || 15000);
+        const control = timedScope(signal, controlLimit, 'A6_SWITCH_TIMEOUT');
         try {
           control.check();
           planned = await waitFor(planSwitch({
@@ -355,9 +371,9 @@ export async function* guardedStream({
           }), control.signal);
           control.check();
         } catch {
+          // 用户主动取消要照常抛出；控制面自己超时只记「这次换不了」。
           signal?.throwIfAborted();
-          control.check();
-          planned = { ok: false };
+          planned = { ok: false, reason: '控制面超时，这次不换商' };
         } finally { control.close(); }
         signal?.throwIfAborted();
         if (planned?.ok) {

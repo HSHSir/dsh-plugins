@@ -43,6 +43,32 @@ export function parseContextNumbers(message) {
 }
 
 /**
+ * 从失败文案里抠出**上游直说**的上下文上限（token），抠不到返回 0。
+ *
+ * 只认上游自己的说法，别把 DSH 的压缩阈值当成商家窗口：
+ *   - "This model's maximum context length is 65536 tokens"
+ *   - "maximum context length is 131072"
+ *   - "context_length_exceeded ... maximum context length 200000"
+ * 这类数字说明的是**商家这条路由真实的窗口**，可以用来学「这家装不下更多」。
+ */
+export function parseContextCapacity(message) {
+  const text = String(message || '');
+  const patterns = [
+    /maximum\s+context\s+(?:length|window)\s*(?:is|of|:)?\s*(\d{3,})/i,
+    /max(?:imum)?\s*(?:context|input)\s*(?:length|window|tokens?)\s*(?:is|of|:)?\s*(\d{3,})/i,
+    /context\s+(?:length|window)\s+of\s+(\d{3,})/i,
+  ];
+  for (const pattern of patterns) {
+    const match = pattern.exec(text);
+    if (match) {
+      const value = Number(match[1]);
+      if (Number.isFinite(value) && value >= 1000) return Math.round(value);
+    }
+  }
+  return 0;
+}
+
+/**
  * 从候选里挑一条「放得下」的路由：够用的里面选最小的（别为了 150k 上下文去用 1M 的贵货）。
  *
  * @param {Array<{provider: string, model: string, contextWindow?: number, defaultMaxTokens?: number}>} routes

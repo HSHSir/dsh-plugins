@@ -118,6 +118,7 @@ export function buildStatus({ cfg, store, switcher, version = '', now = Date.now
       cacheMeasureMinSamples: cfg.cacheMeasureMinSamples,
       latencyWeight: cfg.latencyWeight,
       successWeight: cfg.successWeight,
+      minContextWindowTokens: cfg.minContextWindowTokens,
     },
     routes: routeRows(state),
     channels,

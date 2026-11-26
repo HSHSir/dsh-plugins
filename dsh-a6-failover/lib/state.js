@@ -24,6 +24,12 @@ const USAGE_HALF_LIFE_MS = 3 * 24 * 3600 * 1000;
  * 商家是会自愈也会变坏的，三天前的可用性不该压住今天的表现。
  */
 const OUTCOME_HALF_LIFE_MS = 24 * 3600 * 1000;
+/**
+ * 商家上下文窗口观测的有效期：七天。
+ * 窗口大小跟着上游型号走，商家换号后可能变大；但窗口也不太会天天变，
+ * 太短会让同一堵墙反复撞。
+ */
+const CONTEXT_LIMIT_TTL_MS = 7 * 24 * 3600 * 1000;
 
 export function resolveDshHome() {
   const fromEnv = String(process.env.DSH_HOME || '').trim();
@@ -39,6 +45,7 @@ function emptyState() {
     channels: {},
     usage: {},
     outcomes: {},
+    contextLimits: {},
     pins: {},
     bad: {},
     switches: [],
@@ -123,7 +130,7 @@ export function createStore({ dshHome = resolveDshHome(), logEvents = true, now 
   const eventPath = path.join(dir, 'events.jsonl');
 
   let state = { ...emptyState(), ...(readJson(statePath) || {}) };
-  for (const key of ['tokens', 'routes', 'channels', 'usage', 'outcomes', 'pins', 'bad']) {
+  for (const key of ['tokens', 'routes', 'channels', 'usage', 'outcomes', 'contextLimits', 'pins', 'bad']) {
     if (!state[key] || typeof state[key] !== 'object') state[key] = {};
   }
   if (!Array.isArray(state.switches)) state.switches = [];
@@ -433,6 +440,46 @@ export function createStore({ dshHome = resolveDshHome(), logEvents = true, now 
     setPin(provider, model, info = {}) {
       state.pins[`${provider}|${model}`] = { ...info, at: now() };
       scheduleFlush();
+    },
+
+    // ---- 商家上下文窗口（只记「至少塞不下这么多」的证据）----
+    /**
+     * 记一次「这条路由装不下这么大的上下文」的实测。
+     *
+     * 站点不提供任何窗口字段，所以窗口只能靠撞墙学：某次请求在 X 个 token 时判了上下文超限，
+     * 那这家的窗口必然 ≲ X。同一个商家只保留**最小**的那个观测（撞得越小，说明窗口越小），
+     * 过期时间按 7 天算——商家换上游/换号后可能变大，旧账不该永久生效。
+     * @param {{controlBase?:string, model?:string, channelId?:number, atMost?:number}} row
+     */
+    noteContextLimit({ controlBase = '', model = '', channelId = 0, atMost = 0 } = {}) {
+      const id = Number(channelId);
+      const limit = Number(atMost);
+      if (!Number.isSafeInteger(id) || id <= 0 || !Number.isFinite(limit) || limit <= 0) return null;
+      const scope = controlBase ? `${controlBase}|` : '';
+      const key = `${scope}${String(model || '')}|${id}`;
+      const previous = state.contextLimits[key];
+      const atMostNext = previous && Number(previous.atMost) > 0
+        ? Math.min(Number(previous.atMost), Math.round(limit))
+        : Math.round(limit);
+      const next = { atMost: atMostNext, at: now() };
+      record(state.contextLimits, key, next, 1024);
+      return next;
+    },
+    /** 某模型下各商家的窗口上限（观测值）：Map<channelId, { atMost, at }>。 */
+    contextWindows(model, controlBase = '') {
+      const out = new Map();
+      const scope = controlBase ? `${controlBase}|` : '';
+      const prefix = `${scope}${String(model || '')}|`;
+      const horizon = now() - CONTEXT_LIMIT_TTL_MS;
+      for (const [key, entry] of Object.entries(state.contextLimits || {})) {
+        if (!key.startsWith(prefix)) continue;
+        const id = Number(key.slice(prefix.length));
+        if (!Number.isFinite(id) || id <= 0) continue;
+        if (!entry || Number(entry.at || 0) < horizon) continue;
+        const atMost = Number(entry.atMost) || 0;
+        if (atMost > 0) out.set(Math.trunc(id), { atMost, at: Number(entry.at) || 0 });
+      }
+      return out;
     },
   };
 }
