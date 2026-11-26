@@ -1,3 +1,8 @@
+## 0.7.2 识别上游限制访问占位响应
+
+- 将实际会话中确认的 responseId `resp_freeipblk00000000000000000` 从正常 stop 转为 `A6_UPSTREAM_ACCESS_RESTRICTED`，不再记为成功。
+- 只匹配该明确标记，不按普通回答的关键词判错。标记在 finish 才出现，已交付内容后不重播；未验证限制来源或换商能否解决。
+
 ## 0.7.1 直连优先，失败自动切代理
 
 - **新增 `connectionMode`**（默认 `direct-first`）：先直连，直连在 `directProbeMs`（默认 1500ms）内连不上就自动切代理。可选 `proxy-first` / `direct-only` / `proxy-only`。

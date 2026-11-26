@@ -169,7 +169,7 @@ function timedScope(parent, initialLimit, initialCode) {
 // Only fixed protocol rules and locally generated request identifiers enter evidence.
 function safeFailureCode(code) {
   return PERMANENT_CODES.has(code) || Object.hasOwn(timeoutMessages, code)
-    || /^(?:HTTP_[1-5]\d\d|SERVER|NETWORK|EMPTY_RESPONSE|TRUNCATED|A6_STREAM_FORMAT|A6_STREAM_PREFIX_LIMIT)$/.test(code)
+    || /^(?:HTTP_[1-5]\d\d|SERVER|NETWORK|EMPTY_RESPONSE|TRUNCATED|A6_STREAM_FORMAT|A6_STREAM_PREFIX_LIMIT|A6_UPSTREAM_ACCESS_RESTRICTED)$/.test(code)
     ? code : 'STREAM_FAILURE';
 }
 
@@ -235,7 +235,17 @@ export async function* guardedStream({
           thrown = Object.assign(new Error('模型流事件结构异常'), { code: 'A6_STREAM_FORMAT' });
           break;
         }
-        if (chunk.type === 'finish') { finish = chunk; break; }
+        if (chunk.type === 'finish') {
+          const responseId = chunk.replayState?.response?.responseId;
+          // 已在真实响应中确认的限流占位 ID；不凭自然语言关键词判断正常回答。
+          finish = responseId === 'resp_freeipblk00000000000000000'
+            ? { ...chunk, reason: { kind: 'error', failure: {
+              code: 'A6_UPSTREAM_ACCESS_RESTRICTED',
+              message: '上游返回临时限制访问提示（正常结束标记无效）；请稍后重试或检查中转站。',
+            } } }
+            : chunk;
+          break;
+        }
         if (chunk?.type === 'usage' && chunk.usage && typeof chunk.usage === 'object') lastUsage = chunk.usage;
         const progress = isVisibleChunk(chunk);
         if (!sawVisible && !progress) {

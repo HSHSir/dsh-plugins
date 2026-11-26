@@ -139,3 +139,21 @@ test('abort propagates upstream and releases an uncooperative pending read immed
   assert.equal(f.failures.length, 0);
   assert.equal(f.switches.length, 0);
 });
+
+
+test('known access-block response ID is an error, never success or replay after output', async () => {
+  let successes = 0;
+  const finish = { ...stop, replayState: { response: { responseId: 'resp_freeipblk00000000000000000' } } };
+  const f = fixture([() => chunks(text, finish)], {}, { onSuccess() { successes++; } });
+  await assert.rejects(f.run());
+  assert.equal(successes, 0);
+  assert.equal(f.switches.length, 0);
+  assert.equal(f.failures[0].code, 'A6_UPSTREAM_ACCESS_RESTRICTED');
+  assert.equal(f.seen.at(-1).reason.kind, 'error');
+});
+
+test('ordinary response IDs with normal stop stay successful', async () => {
+  const f = fixture([() => chunks(text, { ...stop, replayState: { response: { responseId: 'resp_normal' } } })]);
+  await f.run();
+  assert.equal(f.failures.length, 0);
+});
