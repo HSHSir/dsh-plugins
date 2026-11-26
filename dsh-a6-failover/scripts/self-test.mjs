@@ -25,7 +25,7 @@ const {
 const { normalizeWorkload, priceModel } = await load('lib/pricing.js');
 const { createStore } = await load('lib/state.js');
 const { normalizeConfig } = await load('lib/config.js');
-const { guardedStream } = await load('lib/stream-guard.js');
+const { guardedStream, classifyAttempt } = await load('lib/stream-guard.js');
 const { createSwitcher } = await load('lib/switcher.js');
 const { a6Request, tokenPlainKey } = await load('lib/a6.js');
 const { apply } = await load('lib/index.js');
@@ -48,6 +48,26 @@ const near = (name, actual, expected, tol = 1e-6) => {
 {
   const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   eq('version.js 与 package.json 版本一致', VERSION, pkg.version);
+}
+
+// 商家特有的非标准格式 400（reasoning_content）应允许换商，普通 400 仍判永久。
+{
+  const cfgSwitch = { switchOnFinishError: true, switchOnThrown: true, switchOnEmpty: true };
+  const formatErr = classifyAttempt({
+    finish: { reason: { kind: 'error', failure: { code: 'INVALID_REQUEST', status: 400,
+      message: '请求参数不正确', reason: '上游说明：messages[1].reasoning_content is required in thinking mode with tools' } } },
+    ended: true, cfg: cfgSwitch,
+  });
+  eq('reasoning_content 格式错误 → 可换商', formatErr.retryable, true);
+  eq('reasoning_content 格式错误 → 非永久', formatErr.permanent, false);
+  eq('reasoning_content 格式错误 → 立即换商', formatErr.switchImmediately, true);
+  const plainErr = classifyAttempt({
+    finish: { reason: { kind: 'error', failure: { code: 'INVALID_REQUEST', status: 400,
+      message: '请求参数不正确：某个字段类型错误' } } },
+    ended: true, cfg: cfgSwitch,
+  });
+  eq('普通 INVALID_REQUEST → 仍永久不换商', plainErr.permanent, true);
+  eq('普通 INVALID_REQUEST → 不可换商', plainErr.retryable, false);
 }
 
 // tokenPlainKey 必须把 connectionMode/directProbeMs 一路传给 a6Request：

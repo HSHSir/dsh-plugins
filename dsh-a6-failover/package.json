@@ -1,6 +1,6 @@
 {
   "name": "dsh-a6-failover",
-  "version": "0.7.8",
+  "version": "0.7.9",
   "description": "DSH a6-failover: switch A6API merchants when model responses fail; price by real usage, drop merchants over 70% of official cost.",
   "icon": "assets/a6-icon.png",
   "type": "module",

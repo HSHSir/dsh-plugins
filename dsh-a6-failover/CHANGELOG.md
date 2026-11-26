@@ -1,3 +1,10 @@
+## 0.7.9 商家非标准格式错误（reasoning_content）允许换商
+
+- **背景**：某些中转站上游不是标准 OpenAI 格式——思考模式 + 工具调用时，强制要求历史 assistant 消息带 `reasoning_content`（标准格式不需要）。跨商家实测：同一标准请求在 1764/6940/7030 返回 200，只有 5927 返回 400 `invalid_request`。
+- **修正**：`stream-guard.js` 的 `failureFacts` 现在把 `reason`/`upstream_message`/`detail` 等字段也纳入错误文本；`classifyFailure` 新增精确识别——`INVALID_REQUEST`/4xx 且错误文本含 `reasoning_content` + `required/missing/缺少/必填`，判为可换商（`switchImmediately`），不再当永久错误放行。其它 4xx（AUTH/QUOTA/MODEL_NOT_FOUND 等）保持 permanent。
+- 这样遇到 5927 这类"格式挑剔"的商家会自动换到兼容的商家，无需改请求体。
+- 测试：self-test 136 项（新增 5 项格式错误识别）、node --test 41 项全绿。
+
 ## 0.7.8 修复 tokenPlainKey 未传连接参数导致崩溃
 
 - `tokenPlainKey()` 函数体引用了 `connectionMode` / `directProbeMs`，但函数签名没收这两个参数，任何调用都会在代理/直连配置下抛 `ReferenceError: connectionMode is not defined`。已补进签名并透传给 `a6Request`。

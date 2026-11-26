@@ -41,12 +41,34 @@ function failureFacts(error, fallbackMessage) {
   const status = Number(details?.status || error?.status || error?.statusCode || error?.response?.status
     || error?.cause?.status || error?.cause?.statusCode || /^HTTP_(\d{3})$/.exec(code)?.[1] || 0);
   const message = String(details?.message || error?.message || fallbackMessage);
-  return { code, status, message };
+  // 上游说明可能藏在 reason / upstream_message / detail 等字段里（A6 网关把「上游说明：…」
+  // 拼进 error.message 或单列字段，各版本不一）。全部拼起来，供格式类错误精确识别。
+  const detail = [details?.reason, details?.detail, details?.upstream_message, error?.reason,
+    error?.upstream_message, error?.detail, error?.response?.data?.message]
+    .filter(Boolean).map((value) => String(value)).join(' ');
+  return { code, status, message, detail: `${message} ${detail}` };
 }
 
-function classifyFailure({ code, status, message }, kind, enabled, sawVisible) {
+/**
+ * 某些中转站的上游不是标准 OpenAI 格式：思考模式 + 工具调用时，强制要求历史 assistant
+ * 消息带 reasoning_content（标准格式不需要）。同一请求换一家就 200（实测 1764/6940/7030 通过，
+ * 只有 5927 报 400）。这类商家特有的格式错误应当换商绕开，而不是当永久错误放行。
+ * 只匹配这类特征，避免把真正的请求格式错误（所有商家都会 400）误判成可换商。
+ */
+function isMerchantFormatFacts({ code, status, detail }) {
+  if (!(code === 'INVALID_REQUEST' || code === 'INVALID' || (status >= 400 && status < 500))) return false;
+  return /reasoning_content/i.test(detail)
+    && /required|missing|is required|不支持|缺少|必填/i.test(detail);
+}
+
+function classifyFailure({ code, status, message, detail }, kind, enabled, sawVisible) {
   // 408/425/429 由服务端或流量状况决定，其余明确的 4xx 需要修正请求。
   const permanent = isPermanentCode(code) || (status >= 400 && status < 500 && ![408, 425, 429].includes(status));
+  // 商家特有的非标准格式要求（如 reasoning_content）：换一家就能用，放行换商。
+  if (isMerchantFormatFacts({ code, status, detail })) {
+    return { retryable: Boolean(enabled), recoverable: true, permanent: false,
+      kind, code, message, switchImmediately: true, reason: 'merchant-format' };
+  }
   // 上游限流占位响应：即使提示文案已作为正文出现，也必须允许换商家重试，
   // 否则 0.7.2 的 sawVisible 分支会把唯一可恢复的错误判成不可重试。
   if (code === 'A6_UPSTREAM_ACCESS_RESTRICTED') {
