@@ -7,7 +7,7 @@
  */
 
 import {
-  A6Error, bareKey, controlOrigin, fetchChannels, fetchSubscriptions, listPins, listTokens, pinChannel, unpinChannel, tokenPlainKey,
+  A6Error, bareKey, controlOrigin, fetchChannels, fetchChannelSearch, fetchSubscriptions, listPins, listTokens, pinChannel, unpinChannel, tokenPlainKey,
 } from './a6.js';
 import { createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
@@ -82,11 +82,11 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
   // 报价线程只拿这份子集算分：漏一个键，线程里就悄悄退回默认值（缓存命中率 0.9 就是这么漏掉的）。
   const quoteKeys = ['maxEffectiveRatio', 'maxPriceRatio', 'cacheHitRate', 'officialCacheHitRate',
     'merchantCacheHitRate', 'unmeasuredMerchantCacheHitRate', 'outputToInputRatio', 'useMeasuredOutputRatio',
-    'outputRatioMinSamples', 'cacheWriteShare', 'assumeMissingCacheAsInput', 'fxCnyPerUsd', 'hardP50Ms',
+    'outputRatioMinSamples', 'cacheWriteShare', 'assumeMissingCacheAsInput', 'hardP50Ms',
     'maxFailRate', 'minSamples', 'priceWeight', 'reliabilityWeight', 'cacheWeight', 'cacheFallbackDiscount',
     'cacheMeasureMinSamples', 'latencyWeight', 'successWeight', 'latencyRefMs', 'minContextWindowTokens'];
   let quoteConfig = Object.fromEntries(quoteKeys.map((key) => [key, cfg[key]]));
-  let selectionKey = JSON.stringify([3, ...Object.values(quoteConfig)]);
+  let selectionKey = JSON.stringify([4, ...Object.values(quoteConfig)]);
 
   /** 该账号是否还在「刚失败过、别立刻再打」的冷却窗口内。 */
   function isCoolingDown(account) {
@@ -368,16 +368,30 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
      * 先等它（通常命中缓存，几毫秒）再拉大表，总耗时反而更短也更稳。
      */
     const cacheRates = await subscriptionRates(site, account, force);
-    const text = await fetchChannels({
+    /*
+     * 优先用市场页的 channels/search：服务端按模型过滤，实测 571KB / 0.4s，
+     * 比旧接口的全量 15MB / 7.6s 小 26 倍、快 19 倍。
+     * 失败（站点改接口/权限变化）时回退到旧的 channels 接口。
+     * 两者都拿 rawJson 文本，交给 worker 里的 parseCandidates（已兼容两种结构）。
+     */
+    const fetchOpts = {
       ...site,
       modelName: model,
-      // 商家表实测 25 MB：站慢时要 30~60 秒，必须给独立的宽超时，
-      // 不能和「查 pin」那种小请求共用 controlTimeoutMs。
-      timeoutMs: Math.max(Number(cfg.channelsTimeoutMs) || 90000, 15000),
+      timeoutMs: Math.max(Number(cfg.channelsTimeoutMs) || 30000, 5000),
       signal: lifetime.signal,
       maxBytes: cfg.maxChannelsBytes,
       rawJson: true,
-    });
+    };
+    let text;
+    let via = 'search';
+    try {
+      text = await fetchChannelSearch(fetchOpts);
+    } catch (err) {
+      if (lifetime.signal.aborted) return [];
+      log?.(`channels/search 失败（${err?.code || err?.message}），回退旧接口`);
+      via = 'legacy';
+      text = await fetchChannels(fetchOpts);
+    }
     if (lifetime.signal.aborted) return [];
     const worker = new Worker(new URL('./quote-worker.js', import.meta.url), {
       execArgv: [],
@@ -401,7 +415,7 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
     const fromSite = trimmed.filter((row) => row.cacheSource === 'site-rate').length;
     const fromMeasured = trimmed.filter((row) => row.cacheSource === 'measured').length;
     const fromDiscount = trimmed.filter((row) => row.cacheSource === 'cache-read-cost').length;
-    log?.(`商家列表：${total} 条 listing → 候选 ${eligible} 家，缓存前 ${trimmed.length} 家；`
+    log?.(`商家列表[${via}]：${total} 条 listing → 候选 ${eligible} 家，缓存前 ${trimmed.length} 家；`
       + `缓存率快照 ${rateRows} 条，实际取自站点 ${fromSite} 家、实测命中 ${fromMeasured} 家、缓存读成本 ${fromDiscount} 家`);
     return trimmed;
   }
@@ -506,20 +520,45 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
   }
 
   /**
-   * 后台定时刷新所有已知模型的商家表。
-   * 切换侧完全不依赖它：它慢、它失败，都不影响请求继续跑。
+   * 后台定时刷新商家表——只刷「DSH 实际用过/配置过」的模型，不碰站点上其他模型。
+   *
+   * 模型来源（并集）：
+   *   knownRoutes   —— beginRequest 实际请求过的 provider|model（重启后为空）
+   *   prewarmRoutes —— 配置里显式预热
+   *   owned         —— 本插件固定过的
+   *   allChannels   —— 磁盘里上次缓存过的（重启后仍在）
+   * 这样站点上新冒出来、DSH 没添加的模型永远不会被下载。
+   * 切换侧完全不依赖这个定时器：它慢、它失败，都不影响请求继续跑。
    */
   function startChannelsRefresh() {
-    const interval = Math.max(Number(cfg.channelsRefreshMs) || 1800000, 60000);
+    const interval = Math.max(Number(cfg.channelsRefreshMs) || 3600000, 60000);
     const tick = async () => {
       if (lifetime.signal.aborted) return;
+      // 收集 { base, model } 去重
+      const targets = new Map(); // key = base|model → { base, model }
+      const add = (base, model) => {
+        if (base && model) targets.set(`${base}|${model}`, { base, model });
+      };
+      // 1) provider|model 形式：从 provider 解析出 controlBase
+      const fromRoutes = new Map(); // provider|model → model
+      for (const r of knownRoutes.values()) if (r?.provider && r?.model) fromRoutes.set(`${r.provider}|${r.model}`, r.model);
+      for (const r of cfg.prewarmRoutes || []) if (r?.provider && r?.model) fromRoutes.set(`${r.provider}|${r.model}`, r.model);
+      for (const r of owned.values()) if (r?.provider && r?.model) fromRoutes.set(`${r.provider}|${r.model}`, r.model);
+      for (const [routeId, model] of fromRoutes) {
+        const provider = routeId.slice(0, routeId.lastIndexOf('|'));
+        const site = resolveSite(provider);
+        if (site.ok) add(site.controlBase, model);
+      }
+      // 2) 磁盘缓存里的模型（重启后仍能刷）
       for (const [base, byModel] of Object.entries(store.allChannels?.() || {})) {
-        for (const model of Object.keys(byModel || {})) {
-          if (lifetime.signal.aborted) return;
-          const site = resolveSiteByBase(base);
-          if (!site.ok) continue;
-          ensureRefresh(site, model, identity(site), true);
-        }
+        for (const model of Object.keys(byModel || {})) add(base, model);
+      }
+      // 逐个刷新；model 通过 resolveSiteByBase 拿到带凭证的 site
+      for (const { base, model } of targets.values()) {
+        if (lifetime.signal.aborted) return;
+        const site = resolveSiteByBase(base);
+        if (!site.ok) continue;
+        ensureRefresh(site, model, identity(site), true);
       }
     };
     const timer = setInterval(() => { tick().catch(() => {}); }, interval);
@@ -1052,7 +1091,7 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
     for (const timer of probeTimers.values()) clearTimeout(timer);
     probeTimers.clear();
     quoteConfig = Object.fromEntries(quoteKeys.map(key => [key, cfg[key]]));
-    selectionKey = JSON.stringify([3, ...Object.values(quoteConfig)]);
+    selectionKey = JSON.stringify([4, ...Object.values(quoteConfig)]);
     routePins.clear();
     for (const [key, row] of owned) {
       const site = resolveSite(row.provider);

@@ -106,9 +106,13 @@ export const DEFAULTS = Object.freeze({
    * 代价：插件用完会 unpin，那条外部固定不会自动回来。
    */
   takeOverExistingPin: false,
-  /** 渠道列表缓存时长（一次拉取很大，别每回都拉）。 */
-  channelCacheTtlMs: 900000,
-  /** 渠道响应最大字节数，超了就当拿不到（保护内存）。 */
+  /** 渠道列表缓存「新鲜」时长。55 分钟——略小于后台刷新间隔 1 小时。 */
+  channelCacheTtlMs: 3300000,
+  /**
+   * 渠道响应最大字节数，超了就当拿不到（保护内存）。
+   * 换用 channels/search 后实测单模型只有 571KB，8MB 足够还留大余量；
+   * 旧接口兜底路径理论上是 15MB，所以保留 48MB 不让回退失败。
+   */
   maxChannelsBytes: 48 * 1024 * 1024,
   /** 价格倍率上限（只看 input 标价）。默认 1 = 关闭；判定以 maxEffectiveRatio 为准。 */
   maxPriceRatio: 1,
@@ -161,19 +165,17 @@ export const DEFAULTS = Object.freeze({
   /** direct-first 下直连的探活超时，默认 1500ms。够快才不算「连不上」。 */
   directProbeMs: 1500,
   /**
-   * 商家表（/api/marketplace/channels）的超时。
-   *
-   * 那份响应实测约 25 MB，站慢时要 60 秒才下完。它跟「查 pin」那种几百字节的请求
-   * 完全不是一个量级，共用一个 12~20 秒的超时会导致每次切换都拉不到候选、必然失败。
+   * 商家表下载超时。换用 channels/search 后实测 571KB / 0.4s，30 秒足够，
+   * 站慢留余量；旧接口兜底路径（15MB）可能需要更久，所以下限仍给到 15 秒起。
    */
-  channelsTimeoutMs: 90000,
+  channelsTimeoutMs: 30000,
   /**
-   * 后台刷新商家表的间隔。默认 30 分钟。
+   * 后台刷新商家表的间隔。默认 1 小时。
    *
-   * 切换只读缓存、绝不现场拉表（25 MB，站慢时一分钟），所以这张表的
-   * 新鲜度完全由这个定时器负责。调小 = 候选更新更及时、后台带宽占用更多。
+   * 中转站模型数据更新不频繁，每小时刷一次足够；只刷 DSH 实际用过的模型。
+   * 切换只读缓存、绝不现场拉表，所以新鲜度完全由这个定时器负责。
    */
-  channelsRefreshMs: 1800000,
+  channelsRefreshMs: 3600000,
   /** 站点没给缓存价时是否按输入价保守估算，默认拒绝缺价候选。 */
   assumeMissingCacheAsInput: false,
   /**
@@ -189,8 +191,6 @@ export const DEFAULTS = Object.freeze({
    * 让它约等于账单上的「元/百万」。
    */
   officialPriceOverride: null,
-  /** 美元→人民币，只用于把单价显示成人看得懂的数（不参与倍率判定）。 */
-  fxCnyPerUsd: 7.2,
   /** 站点 p50 超过这个值直接不要。 */
   hardP50Ms: 20000,
   /** 打分时的延迟参考值：到这个值计 1 倍延迟惩罚，3 倍后封顶。 */
@@ -384,7 +384,6 @@ export function normalizeConfig(raw = {}) {
     channelsTimeoutMs: num(src.channelsTimeoutMs, DEFAULTS.channelsTimeoutMs, 5000, 600000),
     channelsRefreshMs: num(src.channelsRefreshMs, DEFAULTS.channelsRefreshMs, 60000, 86400000),
     officialPriceOverride: officialOverride(src.officialPriceOverride),
-    fxCnyPerUsd: num(src.fxCnyPerUsd, DEFAULTS.fxCnyPerUsd, 0.01, 100),
     hardP50Ms: num(src.hardP50Ms, DEFAULTS.hardP50Ms, 1),
     latencyRefMs: num(src.latencyRefMs, DEFAULTS.latencyRefMs, 1),
     maxFailRate: num(src.maxFailRate, DEFAULTS.maxFailRate, 0, 100),
@@ -464,7 +463,6 @@ export function defaultsForForm() {
     channelsTimeoutMs: d.channelsTimeoutMs,
     channelsRefreshMs: d.channelsRefreshMs,
     officialPriceOverride: d.officialPriceOverride,
-    fxCnyPerUsd: d.fxCnyPerUsd,
     maxPriceRatio: d.maxPriceRatio,
     hardP50Ms: d.hardP50Ms,
     latencyRefMs: d.latencyRefMs,

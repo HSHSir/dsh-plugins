@@ -350,6 +350,22 @@ export async function fetchChannels({ modelName, ...site }) {
 }
 
 /**
+ * 市场页在用的接口：服务端按模型过滤，返回该模型的全部 listing。
+ *
+ * 旧接口 `/api/marketplace/channels?model_name=X` 实测**忽略** model_name，
+ * 每次都返回全站约 15MB / 7455 listing。本接口实测同一模型只有 571KB / 193 条，
+ * 快 19 倍、小 26 倍，字段与旧接口逐字段一致。
+ *
+ * 不带 page/page_size 即为全部条目（实测 193 条）；显式带 sort 也没必要——
+ * 插件有自己的打分排序。
+ */
+export async function fetchChannelSearch({ modelName, pageSize = 500, rawJson = false, ...site }) {
+  const query = `/api/marketplace/channels/search?model=${encodeURIComponent(modelName)}`
+    + `&page=1&page_size=${Math.max(1, Math.trunc(Number(pageSize) || 500))}`;
+  return a6Request({ ...site, path: query, rawJson });
+}
+
+/**
  * 拉模型路由池。缓存率（cache_hit_rate_bps）只在这份响应的
  * `data.items[].auto_channels` 与 `data.items[].auto_pool_preview.items` 里，
  * `/api/marketplace/channels` 的 listing 一个字段都不带（实测 12810/12810 无）。

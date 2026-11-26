@@ -102,7 +102,7 @@ export function buildStatus({ cfg, store, switcher, version = '', now = Date.now
       merchantCacheHitRate: cfg.merchantCacheHitRate ?? 'measured',
       outputToInputRatio: cfg.outputToInputRatio,
       cacheWriteShare: cfg.cacheWriteShare,
-      fxCnyPerUsd: cfg.fxCnyPerUsd,
+      fxSource: 'site-realtime',
       maxPriceRatio: cfg.maxPriceRatio,
       latencyRefMs: cfg.latencyRefMs,
       priceWeight: cfg.priceWeight,

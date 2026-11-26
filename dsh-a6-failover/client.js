@@ -149,8 +149,8 @@ window.__ModuleLoader__.load({
         "label": "后台刷新商家表间隔（分钟）",
         "type": "number",
         "scale": 60000,
-        "step": 5,
-        "hint": "默认 30 分钟。商家表约 25 MB，切换本身只读缓存、不会现场拉表，所以这张表的新鲜度由这里决定。"
+        "step": 10,
+        "hint": "默认 60 分钟。只刷新 DSH 实际用过的模型（用 channels/search 接口，单模型约 571KB），不下载站点上其他模型；切换只读缓存。"
       },
       {
         "key": "officialPriceOverride",
@@ -444,14 +444,6 @@ window.__ModuleLoader__.load({
         "hint": ""
       },
       {
-        "key": "fxCnyPerUsd",
-        "label": "人民币 / 美元汇率",
-        "type": "number",
-        "hint": "仅影响人民币显示，不影响门槛、打分或排序。",
-        "step": 0.1,
-        "min": 0
-      },
-      {
         "key": "channelCacheTtlMs",
         "label": "商家候选缓存有效期（毫秒）",
         "type": "number",
@@ -489,7 +481,7 @@ window.__ModuleLoader__.load({
       degradeAfterFailures: [1, 50], degradeCooldownMs: [0, 86400000], switchDedupeMs: [0, 60000],
       contextHeadroomRatio: [1, 4], maxContextSwitchesPerHour: [0, 100],
       maxEffectiveRatio: [0, 100], cacheHitRate: [0, 1], outputToInputRatio: [0, 100],
-      cacheWriteShare: [0, 1], fxCnyPerUsd: [0.01, 100], hardP50Ms: [1, Number.MAX_SAFE_INTEGER],
+      cacheWriteShare: [0, 1], hardP50Ms: [1, Number.MAX_SAFE_INTEGER],
       latencyRefMs: [1, Number.MAX_SAFE_INTEGER], maxFailRate: [0, 100],
       controlTimeoutMs: [1000, 180000],
       controlUnavailableMs: [0, 3600000], controlProbeMs: [5000, 600000],

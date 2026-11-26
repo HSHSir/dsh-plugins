@@ -1,3 +1,20 @@
+## 0.7.5 换用市场搜索接口：单模型 571KB，只刷 DSH 在用模型，汇率自动取
+
+这一版把商家表从「每模型全量下载 15MB」改成「服务端按模型过滤 571KB」。
+
+- **新增 `fetchChannelSearch()`**：改用网页市场页在用的 `/api/marketplace/channels/search?model=X&page=1&page_size=500`。
+  - 实测同一模型：旧接口 15.47MB / 7.6s（服务端**忽略** model_name，返回全站 7455 listing）；新接口 571KB / 0.4s（服务端已过滤，193 条）。小 26 倍、快 19 倍。
+  - 字段与旧接口逐字段一致（67 个），`classifyListing` 需要的报价/延迟/成功率/缓存价全在。
+  - **保留旧接口回退**：新接口失败（404/权限变化）自动降级到 `/api/marketplace/channels`。
+  - `parseCandidates` 兼容新接口的扁平 `data.items[]` 结构（原来只认 `channel[].listings[]`）。
+- **只刷 DSH 实际用过的模型**：后台刷新的模型清单从「已缓存表的模型」改为
+  `knownRoutes ∪ prewarmRoutes ∪ owned ∪ allChannels` 并集（只有真实请求过/配置过/固定过/缓存过的模型）。站点上新冒出来、DSH 没添加的模型永远不下载。
+- **刷新频率 30min → 1h**：`channelsRefreshMs` 默认 3600000；`channelCacheTtlMs` 默认 3300000（55 分钟）；`channelsTimeoutMs` 默认 30000（新接口够快）。`QUOTE_MAX_AGE_MS` 60min 不变。
+- **移除 `fxCnyPerUsd` 配置项**：汇率直接从 listing 的 `realtime_ratio_exchange_rate` 取（站点实时支付汇率，实测 6.6757），取不到时用内置兜底 7.2。设置页对应输入框已删除，配置覆盖层也清掉了这个键。
+- `selectionKey` 版本 3→4（配置结构变了，让旧缓存失效重拉）。
+- 实测（真实站点）：新接口拉表 1.62s / 71 家（原 25.7s），缓存命中 0ms，真实切换 1.20s 成功 pin ch=5697。
+- 测试：self-test 127 项、node --test 41 项全绿，编码检查干净。
+
 ## 0.7.4 每次换商独立计时 + 上下文窗口下限
 
 - **首块预算不再整轮共用**：去掉 `totalDeadline`，改成每次尝试各算各的。原商家连同它的同路重试共用一笔 `firstResponseTimeoutMs`（默认 30 秒，到点才换商）；每换到一家新商家重新计一笔 `firstResponseBudgetMs`。设置页把「换到新商家后等首块的上限」从 180 秒改成 60 秒，就是每家新商家最多等 60 秒，不会因为前一家慢就把后面的机会吃光。

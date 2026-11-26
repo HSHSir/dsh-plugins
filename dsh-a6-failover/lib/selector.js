@@ -404,9 +404,13 @@ export function classifyListing(item, channel, cfg, options = {}) {
   const useOutputRatio = stat && Number.isFinite(stat.outputRatio) && stat.outputRatio > 0
     && measuredCalls >= (Number.isFinite(cfg.outputRatioMinSamples) ? cfg.outputRatioMinSamples : 2)
     && cfg.useMeasuredOutputRatio !== false;
-  const listingWorkload = useOutputRatio
+  let listingWorkload = useOutputRatio
     ? { ...workload, outputToInput: Math.min(Math.max(stat.outputRatio, 0), 3) }
     : workload;
+  // 汇率直接取站点的实时支付汇率（listing 自带），不再依赖手填的 fxCnyPerUsd。
+  // 站点把它标注为「快照支付汇率 CNY/USD」，同一份数据里每个 listing 都一致。
+  const siteFx = numericField(item.realtime_ratio_exchange_rate ?? channel?.realtime_ratio_exchange_rate);
+  if (Number.isFinite(siteFx) && siteFx > 0) listingWorkload = { ...listingWorkload, fx: siteFx };
 
   const priced = priceModel(item, official, listingWorkload, { merchantCacheHitRate: merchantCache.hit });
   if (!priced.ok) return { ok: false, reason: priced.code, priced };
@@ -516,31 +520,43 @@ export function parseCandidates(payload, modelName, cfg, options = {}) {
   const rejected = {};
   const bump = (reason) => { rejected[reason] = (rejected[reason] || 0) + 1; };
 
-  const channels = payload && typeof payload === 'object' ? payload.data : null;
-  if (!Array.isArray(channels)) return { candidates: [], total: 0, rejected: { 'no-data': 1 } };
+  const data = payload && typeof payload === 'object' ? payload.data : null;
+  if (!data) return { candidates: [], total: 0, rejected: { 'no-data': 1 } };
+
+  /*
+   * 两种数据形状：
+   *   旧接口 /channels        → data 是 channel[]，每条带 listings[]；
+   *   新接口 /channels/search → data.items 是扁平 listing[]（服务端已按模型过滤）。
+   * 统一成 { listing, channel } 对：search 接口下 listing 自带 channel 级字段，
+   * 直接拿它自己当 channel 上下文（classifyListing 内部都以 item.* 优先）。
+   */
+  const pairs = [];
+  if (Array.isArray(data)) {
+    for (const channel of data) {
+      if (!channel || !Array.isArray(channel.listings)) continue;
+      for (const item of channel.listings) if (item && typeof item === 'object') pairs.push([item, channel]);
+    }
+  } else if (Array.isArray(data.items)) {
+    for (const item of data.items) if (item && typeof item === 'object') pairs.push([item, item]);
+  } else {
+    return { candidates: [], total: 0, rejected: { 'no-data': 1 } };
+  }
 
   let total = 0;
   const seen = new Set();
   const candidates = [];
+  for (const [item, channel] of pairs) {
+    if (String(item.model_name || '') !== modelName) continue;
+    total += 1;
 
-  for (const channel of channels) {
-    if (!channel || typeof channel !== 'object') continue;
-    const listings = channel.listings;
-    if (!Array.isArray(listings)) continue;
-    for (const item of listings) {
-      if (!item || typeof item !== 'object') continue;
-      if (String(item.model_name || '') !== modelName) continue;
-      total += 1;
-
-      const verdict = classifyListing(item, channel, cfg, listingOptions);
-      if (!verdict.ok) {
-        bump(verdict.reason);
-        continue;
-      }
-      if (seen.has(verdict.candidate.channelId)) continue;
-      seen.add(verdict.candidate.channelId);
-      candidates.push(verdict.candidate);
+    const verdict = classifyListing(item, channel, cfg, listingOptions);
+    if (!verdict.ok) {
+      bump(verdict.reason);
+      continue;
     }
+    if (seen.has(verdict.candidate.channelId)) continue;
+    seen.add(verdict.candidate.channelId);
+    candidates.push(verdict.candidate);
   }
   return { candidates, total, rejected };
 }

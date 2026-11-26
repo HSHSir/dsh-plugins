@@ -413,6 +413,18 @@ async function drain(stream) { const out = []; for await (const c of stream) out
     switch (url.pathname) {
       case '/api/marketplace/pins': return reply({ data: pinned ? [pinned] : [] });
       case '/api/marketplace/channels': return reply(payload);
+      case '/api/marketplace/channels/search': {
+        // 新接口：把旧格式的 channel[].listings[] 摊平成 data.items[]，模拟服务端按模型过滤。
+        const model = url.searchParams.get('model') || '';
+        const flat = [];
+        for (const ch of (Array.isArray(payload?.data) ? payload.data : [])) {
+          for (const it of (Array.isArray(ch?.listings) ? ch.listings : [])) {
+            if (!model || String(it.model_name || '') === model) flat.push({ ...it,
+              realtime_ratio_exchange_rate: it.realtime_ratio_exchange_rate ?? 7.2 });
+          }
+        }
+        return reply({ success: true, data: { items: flat, total: flat.length } });
+      }
       case '/api/marketplace/pin':
         announcePin();
         await allowPin;
@@ -481,6 +493,16 @@ async function drain(stream) { const out = []; for await (const c of stream) out
       calls.push([url.pathname, body]);
       const reply = (value) => new Response(JSON.stringify(value));
       if (url.pathname.endsWith('/pins')) return reply({ data: pinned ? [{ ...pinned, token_name: 'a6-1' }] : [] });
+      if (url.pathname.endsWith('/channels/search')) {
+        const model = url.searchParams.get('model') || '';
+        const flat = [];
+        const src = paced && Array.isArray(paced.data) ? paced.data : [];
+        for (const ch of src) for (const it of (Array.isArray(ch?.listings) ? ch.listings : [])) {
+          if (!model || String(it.model_name || '') === model) flat.push({ ...it,
+            realtime_ratio_exchange_rate: it.realtime_ratio_exchange_rate ?? 7.2 });
+        }
+        return reply({ success: true, data: { items: flat, total: flat.length } });
+      }
       if (url.pathname.endsWith('/channels')) return reply(paced);
       if (url.pathname.endsWith('/unpin')) { pinned = undefined; return reply({ success: true }); }
       if (url.pathname.endsWith('/pin')) {
@@ -594,7 +616,19 @@ async function drain(stream) { const out = []; for await (const c of stream) out
     let body;
     if (url.pathname.endsWith('/pins')) body = { data: pinned ? [pinned] : [] };
     if (url.pathname.endsWith('/unpin')) { pinned = undefined; body = { success: true }; }
-    if (url.pathname.endsWith('/channels')) {
+    if (url.pathname.endsWith('/channels/search')) {
+      quoteCalls++;
+      await quoteDelay;
+      const model = url.searchParams.get('model') || '';
+      const flat = [];
+      for (const ch of (Array.isArray(payload?.data) ? payload.data : [])) {
+        for (const it of (Array.isArray(ch?.listings) ? ch.listings : [])) {
+          if (!model || String(it.model_name || '') === model) flat.push({ ...it,
+            realtime_ratio_exchange_rate: it.realtime_ratio_exchange_rate ?? 7.2 });
+        }
+      }
+      body = { success: true, data: { items: flat, total: flat.length } };
+    } else if (url.pathname.endsWith('/channels')) {
       quoteCalls++;
       await quoteDelay;
       body = payload;

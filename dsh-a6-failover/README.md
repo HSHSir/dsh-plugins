@@ -1,14 +1,14 @@
-## 0.7.1 直连优先、代理回退与报价缓存
+## 0.7.5 换市场搜索接口：单模型 571KB，只刷在用模型，汇率自动取
 
-- **连接方式**：默认「直连优先」——先直连控制面，1500 毫秒内连不上才自动走代理；也可选代理优先、只直连、只代理。A6API 域名解析到私有网段时，直连不通会自动回退到本机代理。
-- **报价缓存**：切换只读本地缓存（毫秒级），不再现场下载约 25 MB 的商家表；表格由后台每 30 分钟刷新。
-- **官网基准价校准**：按真实账单校准官网价，成本按 `G = B×D + (1-B)×E + C×F`（缓存命中 + 未命中输入 + 输出）计算，不再从输入里扣输出。
-- **P50 只做入选门槛**：站点实测延迟参与打分，越低的商家排越前；P50 仅用于「取较快的一半」入选，不计入得分。
-- 设置页新增「HTTP 代理地址」「连接方式」「直连探活超时」「后台刷新商家表间隔」等字段。
+- **报价数据改用 `channels/search`**：服务端按模型过滤，实测单模型 571KB / 0.4s（旧接口忽略 model_name，每次返回全站约 15MB / 7.6s）；失败自动回退旧接口。
+- **只刷 DSH 实际用过的模型**：后台刷新 `knownRoutes ∪ prewarmRoutes ∪ owned ∪ allChannels`，站点上没添加的模型不会下载。
+- **刷新频率 1 小时**：`channelsRefreshMs` 默认 60 分钟，`channelCacheTtlMs` 55 分钟。
+- **汇率自动取**：从报价里的 `realtime_ratio_exchange_rate` 取站点实时支付汇率，移除了手动填的「人民币/美元汇率」配置项。
+- 沿用 0.7.1 的连接方式（直连优先、失败切代理）、0.6.6 的官网基准价校准、P50 只做入选门槛。
 
-> 更完整的版本演进见 [CHANGELOG.md](./CHANGELOG.md)。
+> 完整技术细节见 [CHANGELOG.md](./CHANGELOG.md) 与 `docs/channels-table*.md`。
 
-# A6 换商家 · dsh-a6-failover 0.7.1
+# A6 换商家 · dsh-a6-failover 0.7.5
 
 插件监测 DSH 中受管的 A6API 请求，默认匹配名称以 `a6api` 开头的 provider。启动时采用平台默认路由，沿用你在平台设置的选路偏好。健康请求直接发送给平台。
 
@@ -64,7 +64,7 @@ A6API 的域名解析到私有地址段，Node 直连可能超时，而浏览器
 
 代理地址填 `proxyUrl`（留空时依次读环境变量 `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`）。站点真的返回 4xx/5xx 不算「连不上」，不会误切代理。
 
-商家表约 25 MB、下载要几十秒。切换**只读本地缓存**（毫秒级），表格由后台按 `channelsRefreshMs`（默认 30 分钟）刷新；缓存还没准备好时本轮先走平台默认路由，不阻塞请求。商家表专用超时是 `channelsTimeoutMs`（默认 90 秒），与查/改固定商家的短超时分开。
+商家表改由 `channels/search` 按模型拉取（实测单模型 571KB / 0.4s，旧接口是全站 15MB / 7.6s；失败自动回退旧接口）。切换**只读本地缓存**（毫秒级），后台按 `channelsRefreshMs`（默认 60 分钟）只刷 DSH 实际用过的模型；缓存还没准备好时本轮先走平台默认路由，不阻塞请求。下载超时 `channelsTimeoutMs` 默认 30 秒。汇率取报价里的站点实时值，不再手填。
 
 ## 设置页与人工举报
 
@@ -79,7 +79,7 @@ $dshDir = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE
 Get-Content (Join-Path $dshDir 'a6-failover/events.jsonl') -Tail 30
 ```
 
-`boot` 事件的 `version` 应为 `0.7.4`。在源码目录运行 `node scripts/self-test.mjs` 可执行本地自检。
+`boot` 事件的 `version` 应为 `0.7.5`。在源码目录运行 `node scripts/self-test.mjs` 可执行本地自检。
 
 ## 许可
 

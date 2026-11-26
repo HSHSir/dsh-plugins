@@ -56,7 +56,9 @@ export function normalizeWorkload(cfg = {}) {
   const unmeasuredHit = numericField(cfg.unmeasuredMerchantCacheHitRate ?? cfg.unmeasuredCacheHitRate);
   const out = numericField(cfg.outputToInputRatio ?? cfg.outputToInput);
   const write = numericField(cfg.cacheWriteShare);
-  const fx = numericField(cfg.fxCnyPerUsd ?? cfg.fx);
+  // 汇率不再由配置提供：优先用 listing 自带的 realtime_ratio_exchange_rate（classifyListing 注入），
+  // 这里只保留一个安全兜底，防止站点偶尔没给汇率字段时算出 NaN。
+  const fx = numericField(cfg.fx);
   const baseline = Number.isFinite(hit) ? clampHit(hit) : DEFAULT_WORKLOAD.cacheHitRate;
   return {
     cacheHitRate: baseline,

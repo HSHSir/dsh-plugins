@@ -18,7 +18,7 @@ export const EDITABLE_KEYS = Object.freeze([
   // 价格线
   'maxEffectiveRatio', 'cacheHitRate', 'officialCacheHitRate', 'merchantCacheHitRate', 'unmeasuredMerchantCacheHitRate',
   'outputToInputRatio', 'useMeasuredOutputRatio', 'outputRatioMinSamples', 'cacheWriteShare', 'assumeMissingCacheAsInput',
-  'officialPriceOverride', 'maxPriceRatio', 'fxCnyPerUsd',
+  'officialPriceOverride', 'maxPriceRatio',
   'proxyUrl', 'connectionMode', 'directProbeMs', 'channelsRefreshMs', 'channelsTimeoutMs',
   // 打分权重
   'priceWeight', 'reliabilityWeight', 'cacheWeight', 'cacheFallbackDiscount', 'cacheMeasureMinSamples', 'latencyWeight', 'successWeight',
@@ -40,7 +40,7 @@ export const SECRET_KEYS = Object.freeze(['accessToken']);
 
 const NUMERIC = new Set([
   'maxEffectiveRatio', 'cacheHitRate', 'officialCacheHitRate', 'merchantCacheHitRate', 'unmeasuredMerchantCacheHitRate',
-  'outputToInputRatio', 'outputRatioMinSamples', 'cacheWriteShare', 'maxPriceRatio', 'fxCnyPerUsd',
+  'outputToInputRatio', 'outputRatioMinSamples', 'cacheWriteShare', 'maxPriceRatio',
   'priceWeight', 'reliabilityWeight', 'cacheWeight', 'cacheMeasureMinSamples', 'latencyWeight', 'successWeight', 'latencyRefMs', 'hardP50Ms', 'maxFailRate', 'minSamples',
   'minContextWindowTokens',
   'firstResponseTimeoutMs', 'firstResponseBudgetMs', 'streamStallTimeoutMs', 'sameRouteRetries',
