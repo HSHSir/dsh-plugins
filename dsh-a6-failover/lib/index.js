@@ -639,7 +639,33 @@ export function apply(ctx, config) {
             }
           },
         }, 'a6-failover refresh'));
-        log(`设置页接口已就绪：/a6-failover/status、/a6-failover/refresh`);
+
+        host.effect?.(() => host.webServer.register({
+          kind: 'exact',
+          path: '/a6-failover/select-best',
+          handler: async (request, response) => {
+            if (!isLocalRequest(request, host.webServer)) return sendJson(response, 403, { ok: false, error: 'local origin only' });
+            if (request.method !== 'POST') return sendJson(response, 405, { ok: false, error: 'POST only' });
+            if (!allowsMutation(request)) return sendJson(response, 403, { ok: false, error: 'settings request required' });
+            let body;
+            try { body = await readJsonBody(request); } catch (error) {
+              return sendJson(response, 400, { ok: false, error: error.message });
+            }
+            const provider = String(body.provider || '');
+            const model = String(body.model || '');
+            if (!model || model.length > 200 || !provider || !isManagedProvider(cfg, provider)) {
+              return sendJson(response, 400, { ok: false, error: '需要受管 provider 与 model' });
+            }
+            try {
+              const selected = await switcher.selectBest(provider, model);
+              if (!selected?.ok) return sendJson(response, 409, { ok: false, error: selected?.reason || '选商失败' });
+              sendJson(response, 200, { ok: true, selected, status: statusPayload() });
+            } catch (error) {
+              sendJson(response, 503, { ok: false, error: error?.message || '手动选商失败' });
+            }
+          },
+        }, 'a6-failover select-best'));
+        log(`设置页接口已就绪：/a6-failover/status、/a6-failover/refresh、/a6-failover/select-best`);
       } catch (error) {
         log(`注册设置页接口失败：${error?.message || error}`);
       }

@@ -999,6 +999,57 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
     } finally { pendingMutations--; }
   }
 
+  /**
+   * 手动选最佳商家：从当前候选表里取打分第一名（排除当前固定商家），固定到它并回查确认。
+   * 与 planSwitch 的区别：这是设置页主动触发、不看失败历史、不占自动切换预算，
+   * 目的是「按当前列表信息立即选最好的一家」，并把结果回给 UI 展示。
+   */
+  async function selectBest(provider, model, callerSignal) {
+    if (lifetime.signal.aborted || callerSignal?.aborted) return { ok: false, reason: '已取消' };
+    const site = resolveSite(provider);
+    if (!site.ok) return { ok: false, reason: site.reason };
+    const control = AbortSignal.any([lifetime.signal, ...(callerSignal ? [callerSignal] : [])]);
+    const account = JSON.stringify([site.controlBase, String(site.userId)]);
+    const { tokenId } = await resolveToken(site, provider, { signal: control });
+    const key = bindPin(provider, model, account, tokenId);
+    const running = changes.get(key);
+    if (running) { const r = await waitFor(running, control); return r.ok ? { ...r, mode: 'deduped' } : r; }
+    const pinned = await currentPin(site, tokenId, model, { signal: control });
+    const exclude = new Set();
+    if (pinned?.channelId) exclude.add(pinned.channelId);
+    // 只读缓存；没有就同步拉一次（用户主动点击，允许等）。
+    let picked = pickCachedCandidates(site, model, exclude);
+    if (!picked.rows.length) {
+      await ensureRefresh(site, model, account, true);
+      picked = { rows: await loadCandidates(site, model, exclude, { force: false, signal: callerSignal }), stale: false };
+    }
+    const candidate = picked.rows[0];
+    if (!candidate) return { ok: false, reason: '没有满足门槛的商家（排除当前固定后）' };
+    const record = { provider, model, controlBase: site.controlBase, userId: String(site.userId), tokenId,
+      channelId: candidate.channelId, previousChannelId: pinned?.channelId || null };
+    journal(key, record);
+    sites.set(key, site);
+    generations.set(key, ++serial);
+    try {
+      await pinChannel({ ...site, signal: control, tokenId, modelName: model,
+        channelId: candidate.channelId, fallbackToSmartRouting: false });
+      const confirmed = await currentPin(site, tokenId, model, { signal: control });
+      if (!confirmed?.strict || confirmed.channelId !== candidate.channelId) throw new Error('固定商家回查失败');
+      journal(key, { ...record, previousChannelId: null });
+      const row = { ...candidate, mode: 'pin', at: Date.now(), controlBase: site.controlBase, attribution: true };
+      lastSwitch.set(key, row);
+      remember(provider, model).external = false;
+      store.logEvent({ type: 'manual-select-best', provider, model, channelId: row.channelId,
+        from: pinned?.channelId || null, effRatio: row.effRatio, cnyPerMillion: row.cnyPerMillion });
+      return { ok: true, provider, model, ...row };
+    } catch (error) {
+      // 固定失败：清掉刚写的账本，站点 pin 保持点击前的原样，不让 UI 误显示。
+      journal(key, null);
+      lastSwitch.delete(key);
+      throw error;
+    }
+  }
+
   async function planSwitch(options) {
     const { provider, model, signal, failedRoutes = new Set(), initial = false } = options;
     if (lifetime.signal.aborted || signal?.aborted) return { ok: false, reason: '已取消' };
@@ -1103,7 +1154,7 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
     }
   }
 
-  return { planSwitch, beginRequest, startRecovery, setStrategy, strategyStatus, updateConfig,
+  return { planSwitch, selectBest, beginRequest, startRecovery, setStrategy, strategyStatus, updateConfig,
     generation, resolveSite, resolveSiteByBase, resolveToken, badChannels, loadCandidates, pickCachedCandidates, ensureRefresh, activeChannel,
     dispose() {
       clearTimeout(sweepRetry); clearTimeout(retryTimer); stopIdleTimer();

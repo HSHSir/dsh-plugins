@@ -1,3 +1,7 @@
+## 0.8.0 手动选最佳商家 + 设置页直观展示
+
+- 设置页「当前路由策略」里每条路由新增「选最佳商家」按钮：按当前列表（成本/成功率/延迟）选第一名并固定，选完立即刷新显示当前渠道与价格等信息。
+
 ## 0.7.9 商家非标准格式错误（reasoning_content）允许换商
 
 - 部分中转站强制要求历史 assistant 带 `reasoning_content`（非标准）。遇到这类 400 现在自动换到兼容商家，不再当作永久错误放行。
@@ -24,7 +28,7 @@
 
 > 完整技术细节见 [CHANGELOG.md](./CHANGELOG.md) 与 `docs/channels-table*.md`。
 
-# A6 换商家 · dsh-a6-failover 0.7.9
+# A6 换商家 · dsh-a6-failover 0.8.0
 
 插件监测 DSH 中受管的 A6API 请求，默认匹配名称以 `a6api` 开头的 provider。启动时采用平台默认路由，沿用你在平台设置的选路偏好。健康请求直接发送给平台。
 
@@ -95,7 +99,7 @@ $dshDir = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE
 Get-Content (Join-Path $dshDir 'a6-failover/events.jsonl') -Tail 30
 ```
 
-`boot` 事件的 `version` 应为 `0.7.9`。在源码目录运行 `node scripts/self-test.mjs` 可执行本地自检。
+`boot` 事件的 `version` 应为 `0.8.0`。在源码目录运行 `node scripts/self-test.mjs` 可执行本地自检。
 
 ## 许可
 
