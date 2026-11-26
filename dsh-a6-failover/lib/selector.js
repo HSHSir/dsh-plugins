@@ -7,7 +7,6 @@
  *   3. **按实际用量折算的成本倍率 ≤ maxEffectiveRatio**（默认 0.7，见 pricing.js）
  *   4. p50 延迟 ≤ hardP50Ms
  *   5. 站点失败率 ≤ maxFailRate
- *   6. 样本数 ≥ minSamples
  * 排序用绝对刻度打分（成本/延迟/失败率），不做 min-max 归一化——成功率那一列几乎
  * 都是 99%~100%，归一化会把 0.1% 的噪声放大成满量程，让排序失去意义。
  *
@@ -295,8 +294,57 @@ function cacheFields(benefit) {
   };
 }
 
+/**
+ * 用**当前**实测命中率重判真实成本门槛。
+ *
+ * 缓存表是 refresh 那一刻的快照：当时没实测的商家按标价倍率过关，后来攒了实测、
+ * 真实成本可能已经超过 maxEffectiveRatio，但快照里的 effRatio 是旧的、门槛也不会重跑。
+ * 每次取候选时按最新实测重算一次，超门槛就当场剔除（返回 null）。
+ *
+ * 只有当这家有实测命中率时才重判；没有实测就保持快照原判，不误杀新商家。
+ */
+function recheckEffectiveRatio(candidate, cfg, measured) {
+  const hit = measuredCacheOf(candidate.channelId, measured, cfg);
+  if (!hit) return candidate; // 没实测：沿用快照判定
+  const workload = normalizeWorkload(cfg);
+  // 老快照没有完整的 official 报价字段：这里重算不出正确的 ratio，
+  // 跳过重判沿用快照判定，等下次 refresh 用新结构补全后再重判（不误杀）。
+  if (!Number.isFinite(candidate.officialCacheReadMicros)) return candidate;
+  const merchantRaw = {
+    inputMicros: candidate.inputMicros,
+    outputMicros: candidate.outputMicros,
+    cacheReadMicros: candidate.cacheReadMicros,
+    cacheWriteMicros: candidate.cacheWriteMicros,
+  };
+  const officialRaw = {
+    inputMicros: candidate.officialInputMicros,
+    outputMicros: candidate.officialOutputMicros,
+    cacheReadMicros: candidate.officialCacheReadMicros,
+    cacheWriteMicros: candidate.officialCacheWriteMicros,
+  };
+
+  const options = {
+    merchantCacheHitRate: hit.value,
+    officialCacheHitRate: candidate.officialCacheHitRate,
+    // 币种/单位缺省时 priceModel 默认 USD + per_1m_tokens，与快照一致。
+  };
+  const priced = priceModel(merchantRaw, officialRaw, workload, options);
+  if (!priced.ok) return null; // 重算失败也无法证明它够便宜，剔除
+  const limit = effectiveLimit(cfg);
+  if (priced.ratio > limit) return null; // 真实成本超门槛 → 剔除
+  // 更新 effRatio/成本展示，让打分也用最新实测
+  return { ...candidate, effRatio: priced.ratio, cnyPerMillion: priced.cnyPerMillion,
+    officialCnyPerMillion: priced.officialCnyPerMillion,
+    merchantCacheHitRate: priced.merchantCacheHitRate, merchantCacheHitMeasured: true,
+    priceCategories: priced.categories, cacheReadRatio: priced.cacheReadRatio };
+}
+
 /** 缓存候选重排时更新实测值，并让已过期的站点快照回退。 */
 export function refreshCandidateCache(candidate, cfg, measured, now = Date.now(), stats = null) {
+  // 按最新实测重判真实成本门槛；超标的直接剔除（返回 null）。
+  const rechecked = recheckEffectiveRatio(candidate, cfg, measured);
+  if (!rechecked) return null;
+  candidate = rechecked;
   // 实测的失败率与延迟每次重排都要刷新：它们比缓存快照变得快得多。
   const stat = stats instanceof Map ? stats.get(candidate.channelId) : null;
   // siteLatencyMs 是站点自己的值，这里不动它——只有本机实测首块延迟够样本时才用它覆盖，
@@ -451,8 +499,9 @@ export function classifyListing(item, channel, cfg, options = {}) {
   const effectiveP50 = measuredP50 || p50;
   if (effectiveP50 <= 0) return { ok: false, reason: 'no-latency', priced };
   if (effectiveP50 > cfg.hardP50Ms) return { ok: false, reason: 'too-slow', priced };
+  // 不再按站点 sample_count 淘汰：样本少的商家也可以进候选，
+  // 真实好坏交给每次取候选时的实测重判（见 refreshCandidateCache）。
   const samples = toInt(item.sample_count);
-  if (samples < cfg.minSamples) return { ok: false, reason: 'few-samples', priced };
 
   // 打分用的延迟：站点最近一次真实响应耗时，没测过才退回 p50（并标明来源，别把「没测过」当「很快」）。
   const siteLatency = siteLatencyOf(item, p50);
@@ -472,7 +521,12 @@ export function classifyListing(item, channel, cfg, options = {}) {
       inputMicros: numericField(item.input_price_micros),
       officialInputMicros: numericField(official.input_price_micros),
       outputMicros: numericField(item.output_price_micros),
+      officialOutputMicros: numericField(official.output_price_micros),
       cacheReadMicros: numericField(item.cache_read_price_micros),
+      officialCacheReadMicros: numericField(official.cache_read_price_micros),
+      cacheWriteMicros: numericField(item.cache_write_price_micros),
+      officialCacheWriteMicros: numericField(official.cache_write_price_micros),
+      pricingCurrency: String(item.pricing_currency || 'USD').toUpperCase(),
       // ratio = 只看 input 的标价倍率；effRatio = 实际用量折算后的倍率（判定与打分都用它）
       ratio: priced.categories.input,
       effRatio: priced.ratio,

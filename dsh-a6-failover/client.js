@@ -183,14 +183,6 @@ window.__ModuleLoader__.load({
         "min": 0
       },
       {
-        "key": "minSamples",
-        "label": "商家统计至少需要几次请求",
-        "type": "number",
-        "hint": "站点统计请求数低于此值时不选该商家。10 表示至少有 10 次记录；0 关闭此项，可能选到数据不足的新商家。",
-        "step": 10,
-        "min": 0
-      },
-      {
         "key": "minContextWindowTokens",
         "label": "上下文窗口下限（token，0 = 不过滤）",
         "type": "number",

@@ -111,7 +111,6 @@ export function buildStatus({ cfg, store, switcher, version = '', now = Date.now
       useMeasuredOutputRatio: cfg.useMeasuredOutputRatio,
       hardP50Ms: cfg.hardP50Ms,
       maxFailRate: cfg.maxFailRate,
-      minSamples: cfg.minSamples,
       priceWeight: cfg.priceWeight,
       cacheWeight: cfg.cacheWeight,
       cacheFallbackDiscount: cfg.cacheFallbackDiscount,

@@ -83,10 +83,10 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
   const quoteKeys = ['maxEffectiveRatio', 'maxPriceRatio', 'cacheHitRate', 'officialCacheHitRate',
     'merchantCacheHitRate', 'unmeasuredMerchantCacheHitRate', 'outputToInputRatio', 'useMeasuredOutputRatio',
     'outputRatioMinSamples', 'cacheWriteShare', 'assumeMissingCacheAsInput', 'hardP50Ms',
-    'maxFailRate', 'minSamples', 'priceWeight', 'reliabilityWeight', 'cacheWeight', 'cacheFallbackDiscount',
+    'maxFailRate', 'priceWeight', 'reliabilityWeight', 'cacheWeight', 'cacheFallbackDiscount',
     'cacheMeasureMinSamples', 'latencyWeight', 'successWeight', 'latencyRefMs', 'minContextWindowTokens'];
   let quoteConfig = Object.fromEntries(quoteKeys.map((key) => [key, cfg[key]]));
-  let selectionKey = JSON.stringify([4, ...Object.values(quoteConfig)]);
+  let selectionKey = JSON.stringify([5, ...Object.values(quoteConfig)]);
 
   /** 该账号是否还在「刚失败过、别立刻再打」的冷却窗口内。 */
   function isCoolingDown(account) {
@@ -448,7 +448,8 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
       const windows = store.contextWindows(model, site.controlBase);
       return rankFastestHalf(rows.filter((row) => !excludeChannels.has(row.channelId) && !known.has(row.channelId)
         && !belowContextFloor(row, windows, cfg))
-        .map((row) => refreshCandidateCache(row, cfg, measured, Date.now(), stats)), cfg);
+        .map((row) => refreshCandidateCache(row, cfg, measured, Date.now(), stats))
+        .filter(Boolean), cfg);
     };
     // 表过期/不兼容时先触发后台刷新（不 await），再用旧表顶上。
     const fresh = compatible && age < Math.min(cfg.channelCacheTtlMs, QUOTE_MAX_AGE_MS);
@@ -481,7 +482,8 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
       const windows = store.contextWindows(model, site.controlBase);
       return rankFastestHalf(rows.filter((row) => !excludeChannels.has(row.channelId) && !known.has(row.channelId)
         && !belowContextFloor(row, windows, cfg))
-        .map((row) => refreshCandidateCache(row, cfg, measured, Date.now(), stats)), cfg);
+        .map((row) => refreshCandidateCache(row, cfg, measured, Date.now(), stats))
+        .filter(Boolean), cfg);
     };
     if (!force && compatible && age < Math.min(cfg.channelCacheTtlMs, QUOTE_MAX_AGE_MS)) return filter(cached.candidates);
     // 同一个 key 只跑一份刷新；已有的那份直接复用（不要另起，也不要抛 A6_BUSY）。
@@ -1091,7 +1093,7 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
     for (const timer of probeTimers.values()) clearTimeout(timer);
     probeTimers.clear();
     quoteConfig = Object.fromEntries(quoteKeys.map(key => [key, cfg[key]]));
-    selectionKey = JSON.stringify([4, ...Object.values(quoteConfig)]);
+    selectionKey = JSON.stringify([5, ...Object.values(quoteConfig)]);
     routePins.clear();
     for (const [key, row] of owned) {
       const site = resolveSite(row.provider);

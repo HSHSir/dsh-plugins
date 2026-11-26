@@ -20,7 +20,7 @@ const load = (rel) => import(pathToFileURL(path.join(root, rel)).href);
 
 const {
   cacheBenefitOf, measuredHitOf, parseCandidates, rankCandidates, officialWithOverride,
-  declaredContextWindow, belowContextFloor, contextWindowFloor,
+  declaredContextWindow, belowContextFloor, contextWindowFloor, refreshCandidateCache,
 } = await load('lib/selector.js');
 const { normalizeWorkload, priceModel } = await load('lib/pricing.js');
 const { createStore } = await load('lib/state.js');
@@ -101,6 +101,23 @@ eq('门槛调低后实测生效', cacheBenefitOf(item, channel, null, normalizeC
 eq('关掉缓存读价后无数据=中性', cacheBenefitOf(item, channel, null, normalizeConfig({ cacheFallbackDiscount: false }), new Map()).source, 'none');
 eq('measuredHitOf 空表', measuredHitOf(item, channel, new Map(), cfg), null);
 eq('measuredHitOf 非 Map', measuredHitOf(item, channel, null, cfg), null);
+
+// ---- 2b. 每次取候选按最新实测重判真实成本门槛 ----
+const recheckCfg = normalizeConfig({ maxEffectiveRatio: 0.7, officialCacheHitRate: 0.98,
+  unmeasuredMerchantCacheHitRate: 0.2, outputToInputRatio: 0.005 });
+const cheapCacheRow = { channelId: 991, inputMicros: 220000, outputMicros: 880000, cacheReadMicros: 2000,
+  cacheWriteMicros: 0, officialInputMicros: 999700, officialOutputMicros: 3999000,
+  officialCacheReadMicros: 20000, officialCacheWriteMicros: 0, ratio: 0.22, effRatio: 0.22,
+  officialCacheHitRate: 0.98, merchantCacheHitRate: 0.2, cacheReadRatio: 0.1,
+  priceCategories: { input: 0.22, cacheRead: 0.1, output: 0.22 }, successRate: 0.99,
+  p50Ms: 1000, siteLatencyMs: 1000, siteLatencyOrigin: 'p50-fallback', cacheSource: 'cache-read-cost',
+  cacheHealth: 0.2, sampleCount: 100, failRate: 0.01, realFailRate: 0.01 };
+eq('实测命中低导致真实成本超标→剔除',
+  refreshCandidateCache(cheapCacheRow, recheckCfg, new Map([[991, { rate: 0.4, samples: 11 }]]), Date.now(), new Map()), null);
+const keptRecheck = refreshCandidateCache(cheapCacheRow, recheckCfg,
+  new Map([[991, { rate: 0.95, samples: 11 }]]), Date.now(), new Map());
+eq('实测命中高成本低→保留并更新 eff', keptRecheck !== null && keptRecheck.effRatio < 0.7, true);
+eq('无实测→沿用快照不误杀', refreshCandidateCache(cheapCacheRow, recheckCfg, new Map(), Date.now(), new Map()).effRatio, 0.22);
 
 // ---- 3. 排序：实测命中率高的先上 ----
 // 缓存读价按官方一致的比例给（2%），这样 5% 命中率不会把真实成本推到门槛之外，

@@ -197,8 +197,6 @@ export const DEFAULTS = Object.freeze({
   latencyRefMs: 3000,
   /** 站点失败率上限（百分比）。 */
   maxFailRate: 15,
-  /** 站点样本数下限。 */
-  minSamples: 20,
   /** 打分权重：成本 60 : 可靠性 30 : 延迟 10。缓存已并入成本，不再单列。 */
   priceWeight: 60,
   reliabilityWeight: 30,
@@ -387,7 +385,6 @@ export function normalizeConfig(raw = {}) {
     hardP50Ms: num(src.hardP50Ms, DEFAULTS.hardP50Ms, 1),
     latencyRefMs: num(src.latencyRefMs, DEFAULTS.latencyRefMs, 1),
     maxFailRate: num(src.maxFailRate, DEFAULTS.maxFailRate, 0, 100),
-    minSamples: num(src.minSamples, DEFAULTS.minSamples, 0),
     priceWeight: num(src.priceWeight, DEFAULTS.priceWeight, 0),
     reliabilityWeight: num(src.reliabilityWeight, DEFAULTS.reliabilityWeight, 0),
     outputRatioMinSamples: num(src.outputRatioMinSamples, DEFAULTS.outputRatioMinSamples, 1),
@@ -467,7 +464,6 @@ export function defaultsForForm() {
     hardP50Ms: d.hardP50Ms,
     latencyRefMs: d.latencyRefMs,
     maxFailRate: d.maxFailRate,
-    minSamples: d.minSamples,
     priceWeight: d.priceWeight,
     reliabilityWeight: d.reliabilityWeight,
     outputRatioMinSamples: d.outputRatioMinSamples,

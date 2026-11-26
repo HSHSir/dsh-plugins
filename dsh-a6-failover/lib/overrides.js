@@ -23,7 +23,7 @@ export const EDITABLE_KEYS = Object.freeze([
   // 打分权重
   'priceWeight', 'reliabilityWeight', 'cacheWeight', 'cacheFallbackDiscount', 'cacheMeasureMinSamples', 'latencyWeight', 'successWeight',
   // 延迟与质量门槛
-  'latencyRefMs', 'hardP50Ms', 'maxFailRate', 'minSamples',
+  'latencyRefMs', 'hardP50Ms', 'maxFailRate',
   'minContextWindowTokens',
   // 切换策略
   'firstResponseTimeoutMs', 'firstResponseBudgetMs', 'streamStallTimeoutMs', 'sameRouteRetries',
@@ -41,7 +41,7 @@ export const SECRET_KEYS = Object.freeze(['accessToken']);
 const NUMERIC = new Set([
   'maxEffectiveRatio', 'cacheHitRate', 'officialCacheHitRate', 'merchantCacheHitRate', 'unmeasuredMerchantCacheHitRate',
   'outputToInputRatio', 'outputRatioMinSamples', 'cacheWriteShare', 'maxPriceRatio',
-  'priceWeight', 'reliabilityWeight', 'cacheWeight', 'cacheMeasureMinSamples', 'latencyWeight', 'successWeight', 'latencyRefMs', 'hardP50Ms', 'maxFailRate', 'minSamples',
+  'priceWeight', 'reliabilityWeight', 'cacheWeight', 'cacheMeasureMinSamples', 'latencyWeight', 'successWeight', 'latencyRefMs', 'hardP50Ms', 'maxFailRate',
   'minContextWindowTokens',
   'firstResponseTimeoutMs', 'firstResponseBudgetMs', 'streamStallTimeoutMs', 'sameRouteRetries',
   'maxSwitchesPerCall', 'maxSwitchesPerHour', 'degradeAfterFailures', 'degradeCooldownMs', 'switchDedupeMs',
