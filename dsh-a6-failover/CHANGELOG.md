@@ -1,3 +1,16 @@
+## 0.7.7 设置持久化：参数固化进默认值，配置文件只留个人凭证
+
+解决「插件更新后设置被恢复默认」的问题。
+
+- **把用户在用的全部非个人参数固化成插件 DEFAULTS**（13 项）：`reliabilityWeight` 10、`latencyWeight` 80、`hardP50Ms` 10000、`maxFailRate` 20、`minContextWindowTokens` 290000、`firstResponseTimeoutMs` 55000、`firstResponseBudgetMs` 60000、`maxSwitchesPerCall` 6、`maxSwitchesPerHour` 50、`takeOverExistingPin` true、`verbose` true 等。这样配置覆盖层被清空/覆盖安装后，生效值仍是用户在用的值。
+- **个人凭证仍走外部配置**：`accessToken`、`userId`、`defaultControlBase` 等接入字段保留在 `~/.dsh/a6-failover/config.json`（插件目录外，覆盖安装不碰），该文件已从 57 项精简到 7 项。
+- **保存加自动备份**：`saveOverrides` 写盘前先把当前 config.json 复制为 `config.json.bak`（只留上一版）。
+- **启动自动恢复**：`loadOverrides` 发现主文件丢失但 `.bak` 存在时，自动恢复一次。
+- 验收：精简后的 config.json 合并新默认值，生效配置与原 57 项完整配置逐字段一致。
+- 测试：self-test 130 项（修正 1 处依赖旧默认 0 的用例）、node --test 41 项全绿。
+
+> 原完整设置已备份到 `~/.dsh/a6-failover-settings-backup.json`（插件目录外）。
+
 ## 0.7.6 移除样本数门槛，每次取候选按最新实测重判真实成本
 
 修掉一个"商家实测变贵了却仍被选中"的问题（典型：4183 实测命中率只有 40%，真实成本是官网的 1.3 倍，超过 0.7 门槛，却因为门槛只在拉表时判一次而一直留在候选里排第一）。

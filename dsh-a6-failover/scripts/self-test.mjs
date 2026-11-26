@@ -204,8 +204,8 @@ eq('没站点数据的仍用实测', rankedSite.find((c) => c.channelId === 2).c
   eq('实测学到的窗口上限生效', parseCandidates({ data: [{ channel_id: 7, listings: [mkListing(7, 100000, 2000)] }] }, 'm1', floorCfg,
     { contextWindows: windows }).candidates.length, 0);
   // 未启用门槛时一律放行
-  eq('门槛为 0 时不过滤', parseCandidates({ data: [{ channel_id: 7, listings: [mkListing(7, 100000, 2000)] }] }, 'm1', cfg,
-    { contextWindows: windows }).candidates.length, 1);
+  eq('门槛为 0 时不过滤', parseCandidates({ data: [{ channel_id: 7, listings: [mkListing(7, 100000, 2000)] }] }, 'm1',
+    normalizeConfig({ minContextWindowTokens: 0 }), { contextWindows: windows }).candidates.length, 1);
 
   // 声明值与实测值冲突时取更小（更悲观）的那个
   eq('声明 1M 但实测只认 200K', contextWindowFloor({ channelId: 7, contextWindow: 1000000 }, new Map([[7, { atMost: 200000 }]])), 200000);

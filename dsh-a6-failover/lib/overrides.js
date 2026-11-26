@@ -125,7 +125,17 @@ export function pickEditable(source = {}) {
 }
 
 export function loadOverrides(dshHome) {
-  return pickEditable(readJson(overridesPath(dshHome)) || {});
+  const file = overridesPath(dshHome);
+  let data = readJson(file);
+  // 主文件没了但备份还在（误删/某些清理动作）→ 自动从 .bak 恢复一次。
+  if (!data) {
+    const backup = readJson(`${file}.bak`);
+    if (backup) {
+      try { writeJsonAtomic(file, backup); } catch { /* 恢复失败就按空处理 */ }
+      data = backup;
+    }
+  }
+  return pickEditable(data || {});
 }
 
 /**
@@ -141,6 +151,11 @@ export function saveOverrides(dshHome, incoming) {
     if (SECRET_KEYS.includes(key) && String(value) === '') continue; // 留空 = 不动
     next[key] = value;
   }
+  // 保存前留一份备份：这个文件在插件目录外（~/.dsh/a6-failover/），覆盖安装本来就不会丢；
+  // 备份再兜一层误删/误清空。只保留上一版，不无限堆。
+  try {
+    if (fs.existsSync(file)) fs.copyFileSync(file, `${file}.bak`);
+  } catch { /* 备份失败不影响保存本身 */ }
   writeJsonAtomic(file, next);
   return next;
 }

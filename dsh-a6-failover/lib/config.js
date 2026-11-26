@@ -36,24 +36,24 @@ export const DEFAULTS = Object.freeze({
   switchOnEmpty: true,
   /** 流没给 finish 就断了（半路掉线）。 */
   switchOnTruncated: true,
-  firstResponseTimeoutMs: 30000,
-  firstResponseBudgetMs: 180000,
+  firstResponseTimeoutMs: 55000,
+  firstResponseBudgetMs: 60000,
   streamStallTimeoutMs: 30000,
   sameRouteRetries: 1,
   /**
    * 商家模型上下文窗口的下限（token）。低于它的商家不参与选商。
    *
-   * 默认 0 = 不过滤。站点**不提供**任何窗口字段（见 selector.js 的说明），所以这个门槛
-   * 只用「有证据的窗口」：商家自己在描述里写明的（"1M上下文"/"25万上下文"），以及我们
-   * 自己请求撞过上下文超限学到的上限。没有证据的商家一律放行——「不知道」不等于「小」。
+   * 当前设为 290000（用户在用值）：低于 29 万窗口的商家不参与选商。站点**不提供**任何窗口字段
+   * （见 selector.js 的说明），所以这个门槛只用「有证据的窗口」：商家自己在描述里写明的，
+   * 以及我们自己请求撞过上下文超限学到的上限。没有证据的商家一律放行。
    */
-  minContextWindowTokens: 0,
+  minContextWindowTokens: 290000,
 
   // ---- 切换预算（防止在商家之间反复横跳把一轮对话拖死） ----
   /** 单次模型调用最多切换几次商家。 */
-  maxSwitchesPerCall: 2,
+  maxSwitchesPerCall: 6,
   /** 滑动一小时内的切换上限。 */
-  maxSwitchesPerHour: 12,
+  maxSwitchesPerHour: 50,
   /** 同一路由连续失败几次后进入降级（后续调用直接走备用路由 / 先切商家）。 */
   degradeAfterFailures: 3,
   /** 降级保持时长。 */
@@ -105,7 +105,7 @@ export const DEFAULTS = Object.freeze({
    *   · 只有原来那一家合格 → 直接认领（记进 ownedPins），不为换而换。
    * 代价：插件用完会 unpin，那条外部固定不会自动回来。
    */
-  takeOverExistingPin: false,
+  takeOverExistingPin: true,
   /** 渠道列表缓存「新鲜」时长。55 分钟——略小于后台刷新间隔 1 小时。 */
   channelCacheTtlMs: 3300000,
   /**
@@ -192,15 +192,15 @@ export const DEFAULTS = Object.freeze({
    */
   officialPriceOverride: null,
   /** 站点 p50 超过这个值直接不要。 */
-  hardP50Ms: 20000,
+  hardP50Ms: 10000,
   /** 打分时的延迟参考值：到这个值计 1 倍延迟惩罚，3 倍后封顶。 */
   latencyRefMs: 3000,
   /** 站点失败率上限（百分比）。 */
-  maxFailRate: 15,
-  /** 打分权重：成本 60 : 可靠性 30 : 延迟 10。缓存已并入成本，不再单列。 */
+  maxFailRate: 20,
+  /** 打分权重：成本 60 : 可靠性 10 : 延迟 80（用户在用值）。缓存已并入成本，不再单列。 */
   priceWeight: 60,
-  reliabilityWeight: 30,
-  latencyWeight: 10,
+  reliabilityWeight: 10,
+  latencyWeight: 80,
   /** 实测输出/输入比至少要有几次采样才采用（2 次以内噪声太大）。 */
   outputRatioMinSamples: 2,
   /** 关掉就用配置里的固定 outputToInputRatio。 */
@@ -241,7 +241,7 @@ export const DEFAULTS = Object.freeze({
   /** 写 ~/.dsh/a6-failover/events.jsonl。 */
   logEvents: true,
   /** 往 stderr 打一行摘要（DSH 日志里能看到）。 */
-  verbose: false,
+  verbose: true,
   /** 控制面请求超时。 */
   controlTimeoutMs: 20000,
 });
