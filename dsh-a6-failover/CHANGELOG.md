@@ -1,3 +1,9 @@
+## 0.7.8 修复 tokenPlainKey 未传连接参数导致崩溃
+
+- `tokenPlainKey()` 函数体引用了 `connectionMode` / `directProbeMs`，但函数签名没收这两个参数，任何调用都会在代理/直连配置下抛 `ReferenceError: connectionMode is not defined`。已补进签名并透传给 `a6Request`。
+- 补回归测试：验证 `tokenPlainKey` 能正常返回明文 key（self-test 131 项）。
+- 排查 `reasoning_content is required in thinking mode with tools` 报错（用户会话）：确认是**请求体问题**——思考模型要求历史 assistant 消息带 `reasoning_content`，换商家无效（实测带该字段或去掉历史 assistant 均 200）。插件把它判为 permanent 错误不换商是正确行为，未改动这块逻辑。
+
 ## 0.7.7 设置持久化：参数固化进默认值，配置文件只留个人凭证
 
 解决「插件更新后设置被恢复默认」的问题。

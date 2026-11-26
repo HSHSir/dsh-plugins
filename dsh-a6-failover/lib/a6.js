@@ -420,7 +420,8 @@ export async function listTokens(site) {
   return Array.isArray(rows) ? rows : [];
 }
 
-export async function tokenPlainKey({ controlBase, accessToken, userId, tokenId, timeoutMs, signal, proxyUrl }) {
+export async function tokenPlainKey({ controlBase, accessToken, userId, tokenId, timeoutMs, signal, proxyUrl,
+  connectionMode, directProbeMs }) {
   const payload = await a6Request({
     controlBase,
     path: `/api/token/${Number(tokenId)}/key`,

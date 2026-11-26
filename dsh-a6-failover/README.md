@@ -1,3 +1,5 @@
+## 0.7.8 修复 tokenPlainKey 连接参数缺失崩溃
+
 ## 0.7.7 设置持久化：参数固化进默认值，配置只留个人凭证
 
 - 用户在用的非个人参数已固化为插件默认值，插件更新/覆盖安装后不再恢复成出厂默认。
@@ -18,7 +20,7 @@
 
 > 完整技术细节见 [CHANGELOG.md](./CHANGELOG.md) 与 `docs/channels-table*.md`。
 
-# A6 换商家 · dsh-a6-failover 0.7.7
+# A6 换商家 · dsh-a6-failover 0.7.8
 
 插件监测 DSH 中受管的 A6API 请求，默认匹配名称以 `a6api` 开头的 provider。启动时采用平台默认路由，沿用你在平台设置的选路偏好。健康请求直接发送给平台。
 
@@ -89,7 +91,7 @@ $dshDir = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE
 Get-Content (Join-Path $dshDir 'a6-failover/events.jsonl') -Tail 30
 ```
 
-`boot` 事件的 `version` 应为 `0.7.7`。在源码目录运行 `node scripts/self-test.mjs` 可执行本地自检。
+`boot` 事件的 `version` 应为 `0.7.8`。在源码目录运行 `node scripts/self-test.mjs` 可执行本地自检。
 
 ## 许可
 

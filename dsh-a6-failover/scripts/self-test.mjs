@@ -27,7 +27,7 @@ const { createStore } = await load('lib/state.js');
 const { normalizeConfig } = await load('lib/config.js');
 const { guardedStream } = await load('lib/stream-guard.js');
 const { createSwitcher } = await load('lib/switcher.js');
-const { a6Request } = await load('lib/a6.js');
+const { a6Request, tokenPlainKey } = await load('lib/a6.js');
 const { apply } = await load('lib/index.js');
 const { VERSION } = await load('lib/version.js');
 
@@ -48,6 +48,27 @@ const near = (name, actual, expected, tol = 1e-6) => {
 {
   const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   eq('version.js 与 package.json 版本一致', VERSION, pkg.version);
+}
+
+// tokenPlainKey 必须把 connectionMode/directProbeMs 一路传给 a6Request：
+// 少传一个就会在代理模式下抛 ReferenceError（0.7.7 修过一次）。
+{
+  const savedFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('/api/token/') && String(url).includes('/key')) {
+      return new Response(JSON.stringify({ success: true, data: { key: 'sk-test-key' } }));
+    }
+    throw new Error(`unexpected ${url}`);
+  };
+  try {
+    const key = await tokenPlainKey({ controlBase: 'https://a6api.vip', accessToken: 't', userId: '1',
+      tokenId: 123, timeoutMs: 100, proxyUrl: '', connectionMode: 'direct-first', directProbeMs: 1500 });
+    eq('tokenPlainKey 返回明文 key', key, 'sk-test-key');
+  } catch (error) {
+    fails.push(`tokenPlainKey 抛异常: ${error.message}`);
+  } finally {
+    globalThis.fetch = savedFetch;
+  }
 }
 
 const tempDirs = [];
