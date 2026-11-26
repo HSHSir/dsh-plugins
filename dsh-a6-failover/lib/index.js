@@ -653,11 +653,12 @@ export function apply(ctx, config) {
             }
             const provider = String(body.provider || '');
             const model = String(body.model || '');
+            const mode = body.mode === 'next' ? 'next' : 'reset';
             if (!model || model.length > 200 || !provider || !isManagedProvider(cfg, provider)) {
               return sendJson(response, 400, { ok: false, error: '需要受管 provider 与 model' });
             }
             try {
-              const selected = await switcher.selectBest(provider, model);
+              const selected = await switcher.selectBest(provider, model, undefined, mode);
               if (!selected?.ok) return sendJson(response, 409, { ok: false, error: selected?.reason || '选商失败' });
               sendJson(response, 200, { ok: true, selected, status: statusPayload() });
             } catch (error) {

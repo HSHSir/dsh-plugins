@@ -600,12 +600,13 @@ window.__ModuleLoader__.load({
         } catch (err) { setError(err.message || '策略操作失败'); }
         finally { await reload(); setPending(''); }
       };
-      const pickBest = async (provider, model) => {
-        setPending(`${provider}|${model}`);
+      const pickBest = async (provider, model, mode = 'reset') => {
+        const busyKey = `${provider}|${model}|${mode}`;
+        setPending(busyKey);
         setError('');
         try {
           const result = await getJson('/a6-failover/select-best', {
-            method: 'POST', body: JSON.stringify({ provider, model }),
+            method: 'POST', body: JSON.stringify({ provider, model, mode }),
           });
           if (result.ok === false) throw new Error(result.error || '选商失败');
         } catch (err) { setError(err.message || '手动选商失败'); }
@@ -626,10 +627,12 @@ window.__ModuleLoader__.load({
         error && h('div', { role: 'alert', style: S.err }, error),
         routes.map(r => {
           const source = { measured: '本机实测', 'site-rate': '站点统计' }[r.cacheSource];
-          const busy = pending === `${r.provider}|${r.model}`;
+          const busyReset = pending === `${r.provider}|${r.model}|reset`;
+          const busyNext = pending === `${r.provider}|${r.model}|next`;
           const chosen = r.channelId ? `#${r.channelId}` : '未确认';
+          const seq = r.selectionIndex ? ` · 第 ${r.selectionIndex}${r.selectionTotal ? `/${r.selectionTotal}` : ''} 家` : '';
           return h('details', { key: `${r.provider}/${r.model}`, open: r.mode !== 'platform' },
-            h('summary', null, `${r.provider} / ${r.model} · ${modeNames[r.mode] || modeNames.unknown} · 当前 ${chosen} · 活跃 ${r.active ?? '—'}`),
+            h('summary', null, `${r.provider} / ${r.model} · ${modeNames[r.mode] || modeNames.unknown} · 当前 ${chosen}${seq} · 活跃 ${r.active ?? '—'}`),
             h(KV, { rows: [
               ['商家 / 渠道', [r.supplierName, r.channelName, r.channelId ? `#${r.channelId}` : null].filter(Boolean).join(' / ') || '未确认'],
               ['预计成本 / 百万输入 token', money(r.cnyPerMillion)],
@@ -638,10 +641,13 @@ window.__ModuleLoader__.load({
               ['打分用延迟', Number.isFinite(r.siteLatencyMs) ? `${r.siteLatencyMs} ms（${({ 'site-test': '站点最近实测', 'p50-fallback': 'p50 兜底', 'measured-first-block': '本机首块实测', none: '无数据' })[r.siteLatencyOrigin] || '来源待确认'}）` : '无数据'],
             ] }),
             h('div', { style: { ...S.row, marginTop: 8, justifyContent: 'flex-start' } },
-              h('button', { style: S.btnPrimary, disabled: busy || !enabled,
-                onClick: () => pickBest(r.provider, r.model) },
-                busy ? '正在选择…' : '选最佳商家'),
-              h('span', { style: S.hint }, '按当前列表（成本/成功率/延迟）选第一名并固定')));
+              h('button', { style: S.btnPrimary, disabled: (busyReset || busyNext) || !enabled,
+                onClick: () => pickBest(r.provider, r.model, 'reset') },
+                busyReset ? '正在选择…' : '选最佳商家'),
+              h('button', { style: S.btnPrimary, disabled: (busyReset || busyNext) || !enabled,
+                onClick: () => pickBest(r.provider, r.model, 'next') },
+                busyNext ? '正在换…' : '换一家'),
+              h('span', { style: S.hint }, '选最佳=重新排序从第1家起；换一家=沿该排序依次第2/3/4家')));
         }));
     }
 

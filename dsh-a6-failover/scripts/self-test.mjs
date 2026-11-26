@@ -757,6 +757,52 @@ async function drain(stream) { const out = []; for await (const c of stream) out
   }
 }
 
+// 手动选商序号：选最佳重置到第 1 家，换一家沿排序依次第 2/3 家。
+{
+  const { createStore: mkStore } = await load('lib/state.js');
+  const { createSwitcher: mkSwitcher } = await load('lib/switcher.js');
+  const { normalizeConfig: mkCfg } = await load('lib/config.js');
+  const originFetch = globalThis.fetch;
+  const home2 = fs.mkdtempSync(path.join(os.tmpdir(), 'a6-sequence-'));
+  const mkRow = (id) => ({ channel_id: id, listing_id: id, model_name: 'm1',
+    input_price_micros: 100000, output_price_micros: 400000, cache_read_price_micros: 6000,
+    recent_p50_ms: 1000 + id * 10, last_test_response_ms: 1000 + id * 100,
+    recent_success_rate: 9990, sample_count: 1000,
+    official_price: { input_price_micros: 1000000, output_price_micros: 4000000, cache_read_price_micros: 20000 } });
+  const rows2 = [1, 2, 3, 4, 5].map(mkRow);
+  let pinned2 = null;
+  globalThis.fetch = async (url, req) => {
+    const body = req?.body ? JSON.parse(req.body) : null;
+    const reply = (v) => new Response(JSON.stringify({ success: true, data: v }));
+    if (url.pathname.endsWith('/subscriptions')) return reply([]);
+    if (url.pathname.endsWith('/pins')) return reply(pinned2 ? [pinned2] : []);
+    if (url.pathname.endsWith('/channels/search')) return reply({ items: rows2, total: rows2.length });
+    if (url.pathname.endsWith('/channels')) return reply([{ listings: rows2 }]);
+    if (url.pathname.endsWith('/unpin')) { pinned2 = null; return reply({}); }
+    if (url.pathname.endsWith('/pin')) { pinned2 = { ...body, status: 'active', route_effective: true, fallback_to_smart_routing: false }; return reply({}); }
+    if (url.pathname.endsWith('/key')) return reply({ key: 'sk-test' });
+    throw new Error(`Unexpected ${url.pathname}`);
+  };
+  const cfg2 = mkCfg({ defaultControlBase: 'https://example.invalid', accessToken: 't', userId: '5',
+    cacheWeight: 0, providerOverrides: { 'a6api-1': { tokenId: 10 } } });
+  const store2 = mkStore({ dshHome: home2, logEvents: false });
+  const sw2 = mkSwitcher({ cfg: cfg2, store: store2, log: () => {} });
+  try {
+    const r0 = await sw2.selectBest('a6api-1', 'm1', undefined, 'reset');
+    eq('选最佳选中第 1 家', [r0.ok, r0.selectionIndex, r0.selectionMode], [true, 1, 'reset']);
+    const r1 = await sw2.selectBest('a6api-1', 'm1', undefined, 'next');
+    eq('换一家选中第 2 家', [r1.ok, r1.selectionIndex, r1.selectionMode], [true, 2, 'next']);
+    const r2 = await sw2.selectBest('a6api-1', 'm1', undefined, 'next');
+    eq('再换一家选中第 3 家', [r2.ok, r2.selectionIndex], [true, 3]);
+    eq('选最佳与换一家落到不同商家', new Set([r0.channelId, r1.channelId, r2.channelId]).size, 3);
+    const rr = await sw2.selectBest('a6api-1', 'm1', undefined, 'reset');
+    eq('再次选最佳重置回第 1 家', [rr.ok, rr.selectionIndex], [true, 1]);
+  } finally {
+    sw2.dispose(); store2.dispose(); globalThis.fetch = originFetch;
+    fs.rmSync(home2, { recursive: true, force: true });
+  }
+}
+
 for (const dir of tempDirs) fs.rmSync(dir, { recursive: true, force: true });
 console.log(`\n${pass} 项通过，${fails.length} 项失败`);
 for (const f of fails) console.log('  ✗ ' + f);

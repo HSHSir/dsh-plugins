@@ -601,6 +601,9 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
   const pendingRestore = new Set(owned.keys());
   const sites = new Map();
   const generations = new Map();
+  /** 手动选商序列：key=provider|model → { order: channelId[], cursor: 当前序号 }。
+   *  「选最佳」重置并固定整条排序；「换一家」按这条排序依次往下取，保证第2/3/4家稳定。 */
+  const manualOrder = new Map();
   let serial = 0;
   let active = 0;
   let operations = 0;
@@ -1004,7 +1007,7 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
    * 与 planSwitch 的区别：这是设置页主动触发、不看失败历史、不占自动切换预算，
    * 目的是「按当前列表信息立即选最好的一家」，并把结果回给 UI 展示。
    */
-  async function selectBest(provider, model, callerSignal) {
+  async function selectBest(provider, model, callerSignal, mode = 'reset') {
     if (lifetime.signal.aborted || callerSignal?.aborted) return { ok: false, reason: '已取消' };
     const site = resolveSite(provider);
     if (!site.ok) return { ok: false, reason: site.reason };
@@ -1012,19 +1015,51 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
     const account = JSON.stringify([site.controlBase, String(site.userId)]);
     const { tokenId } = await resolveToken(site, provider, { signal: control });
     const key = bindPin(provider, model, account, tokenId);
+    const orderKey = `${provider}|${model}`;
     const running = changes.get(key);
     if (running) { const r = await waitFor(running, control); return r.ok ? { ...r, mode: 'deduped' } : r; }
     const pinned = await currentPin(site, tokenId, model, { signal: control });
     const exclude = new Set();
     if (pinned?.channelId) exclude.add(pinned.channelId);
-    // 只读缓存；没有就同步拉一次（用户主动点击，允许等）。
+
+    // 拉一份当前候选（排除当前固定商家）。用户主动点击，允许等一次刷新。
     let picked = pickCachedCandidates(site, model, exclude);
     if (!picked.rows.length) {
       await ensureRefresh(site, model, account, true);
       picked = { rows: await loadCandidates(site, model, exclude, { force: false, signal: callerSignal }), stale: false };
     }
-    const candidate = picked.rows[0];
-    if (!candidate) return { ok: false, reason: '没有满足门槛的商家（排除当前固定后）' };
+    const rows = picked.rows;
+    if (!rows.length) return { ok: false, reason: '没有满足门槛的商家（排除当前固定后）' };
+
+    let candidate;
+    let cursor = 0;
+    if (mode === 'next' && manualOrder.has(orderKey)) {
+      // 换一家：沿已固定的排序往下走，跳过已经失效的 channelId。
+      const state = manualOrder.get(orderKey);
+      let i = (state.cursor ?? 0) + 1;
+      const byId = new Map(rows.map((row) => [row.channelId, row]));
+      while (i < state.order.length && !byId.has(state.order[i])) i++; // 快照里失效的跳过
+      if (i < state.order.length) {
+        candidate = byId.get(state.order[i]);
+        cursor = i;
+      } else {
+        // 到末尾了：重新拉排序、从头再来。
+        const fresh = rows.map((row) => row.channelId);
+        manualOrder.set(orderKey, { order: fresh, cursor: 0 });
+        candidate = rows[0];
+        cursor = 0;
+      }
+    } else {
+      // 选择最佳：重置排序快照并从第 1 家开始。
+      const order = rows.map((row) => row.channelId);
+      manualOrder.set(orderKey, { order, cursor: 0 });
+      candidate = rows[0];
+      cursor = 0;
+    }
+    if (!candidate) return { ok: false, reason: '没有更多可用商家' };
+    const currentOrder = manualOrder.get(orderKey);
+    if (currentOrder) currentOrder.cursor = cursor;
+
     const record = { provider, model, controlBase: site.controlBase, userId: String(site.userId), tokenId,
       channelId: candidate.channelId, previousChannelId: pinned?.channelId || null };
     journal(key, record);
@@ -1036,14 +1071,17 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
       const confirmed = await currentPin(site, tokenId, model, { signal: control });
       if (!confirmed?.strict || confirmed.channelId !== candidate.channelId) throw new Error('固定商家回查失败');
       journal(key, { ...record, previousChannelId: null });
-      const row = { ...candidate, mode: 'pin', at: Date.now(), controlBase: site.controlBase, attribution: true };
+      const row = { ...candidate, mode: 'pin', at: Date.now(), controlBase: site.controlBase, attribution: true,
+        selectionIndex: cursor + 1, selectionTotal: currentOrder?.order.length || rows.length, selectionMode: mode };
       lastSwitch.set(key, row);
       remember(provider, model).external = false;
-      store.logEvent({ type: 'manual-select-best', provider, model, channelId: row.channelId,
-        from: pinned?.channelId || null, effRatio: row.effRatio, cnyPerMillion: row.cnyPerMillion });
+      store.logEvent({ type: mode === 'next' ? 'manual-next' : 'manual-select-best', provider, model,
+        channelId: row.channelId, from: pinned?.channelId || null, index: row.selectionIndex,
+        total: row.selectionTotal, effRatio: row.effRatio, cnyPerMillion: row.cnyPerMillion });
       return { ok: true, provider, model, ...row };
     } catch (error) {
-      // 固定失败：清掉刚写的账本，站点 pin 保持点击前的原样，不让 UI 误显示。
+      // 固定失败：把序号退回，清掉刚写的账本，站点 pin 保持点击前的原样。
+      if (currentOrder && currentOrder.cursor === cursor) currentOrder.cursor = Math.max(0, cursor - 1);
       journal(key, null);
       lastSwitch.delete(key);
       throw error;

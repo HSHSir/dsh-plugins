@@ -1,3 +1,7 @@
+## 0.8.3 新增「换一家」按钮
+
+- 「选最佳商家」重排并从第 1 家开始；「换一家」沿该排序依次切到第 2/3/4 家，摘要显示「第 N/M 家」。
+
 ## 0.8.2 设置页权重改用滑条
 
 - 成本/可靠性/延迟权重改为滑条 + 数值输入框，拖动即可调整，也支持输入精确值。
@@ -36,7 +40,7 @@
 
 > 完整技术细节见 [CHANGELOG.md](./CHANGELOG.md) 与 `docs/channels-table*.md`。
 
-# A6 换商家 · dsh-a6-failover 0.8.2
+# A6 换商家 · dsh-a6-failover 0.8.3
 
 插件监测 DSH 中受管的 A6API 请求，默认匹配名称以 `a6api` 开头的 provider。启动时采用平台默认路由，沿用你在平台设置的选路偏好。健康请求直接发送给平台。
 
@@ -107,7 +111,7 @@ $dshDir = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE
 Get-Content (Join-Path $dshDir 'a6-failover/events.jsonl') -Tail 30
 ```
 
-`boot` 事件的 `version` 应为 `0.8.2`。在源码目录运行 `node scripts/self-test.mjs` 可执行本地自检。
+`boot` 事件的 `version` 应为 `0.8.3`。在源码目录运行 `node scripts/self-test.mjs` 可执行本地自检。
 
 ## 许可
 
