@@ -231,15 +231,17 @@ window.__ModuleLoader__.load({
       {
         "key": "priceWeight",
         "label": "成本权重",
-        "type": "number",
-        "hint": "按实际成本倍率（商家报价 × 它自己的命中率 × 实测输出比）的对数刻度计分。",
+        "type": "slider",
+        "sliderMax": 200,
+        "hint": "按实际成本倍率（商家报价 × 它自己的命中率 × 实测输出比）的对数刻度计分。可拖动滑条或右侧输入精确值。",
         "step": 5,
         "min": 0
       },
       {
         "key": "reliabilityWeight",
         "label": "可靠性权重",
-        "type": "number",
+        "type": "slider",
+        "sliderMax": 200,
         "hint": "失败率越高，总分越高，排名越靠后。优先使用平滑后的实测失败率，缺少实测时使用站点失败率。",
         "step": 5,
         "min": 0
@@ -247,7 +249,8 @@ window.__ModuleLoader__.load({
       {
         "key": "latencyWeight",
         "label": "延迟权重",
-        "type": "number",
+        "type": "slider",
+        "sliderMax": 200,
         "hint": "用站点「延迟」列（最近一次真实响应耗时），越低越好；没测过才退回 p50 并标明来源。p50 本身不参与打分。",
         "step": 5,
         "min": 0
@@ -478,9 +481,11 @@ window.__ModuleLoader__.load({
       controlTimeoutMs: [1000, 180000],
       controlUnavailableMs: [0, 3600000], controlProbeMs: [5000, 600000],
       minContextWindowTokens: [0, 10000000],
+      priceWeight: [0, 1000], reliabilityWeight: [0, 1000], latencyWeight: [0, 1000],
     };
+    const isNumericField = (field) => field.type === 'number' || field.type === 'slider';
     for (const group of GROUPS) for (const field of group.fields) {
-      if (field.type !== 'number') continue;
+      if (!isNumericField(field)) continue;
       [field.min, field.max] = LIMITS[field.key] || [0, Number.MAX_SAFE_INTEGER];
     }
     const ALL_FIELDS = GROUPS.flatMap((group) => group.fields.map((field) => ({ ...field, group: group.title })));
@@ -544,6 +549,28 @@ window.__ModuleLoader__.load({
           value: value === '' || value == null ? '' : Number(value) / (field.scale || 1),
           onChange: (event) => onChange(event.target.value === '' ? '' : Number(event.target.value) * (field.scale || 1)),
         });
+      } else if (field.type === 'slider') {
+        const scale = field.scale || 1;
+        const sliderMax = (field.sliderMax ?? field.max) / scale;
+        const step = field.step || 1;
+        const num = value === '' || value == null ? 0 : Number(value) / scale;
+        const safeNum = Number.isFinite(num) ? num : 0;
+        const sliderStyle = { ...S.input, flex: 1, minWidth: 120, padding: '2px 6px', accentColor: '#6ea8fe' };
+        const boxStyle = { ...S.input, width: 72, textAlign: 'center' };
+        control = h('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
+          h('input', {
+            id, type: 'range', style: sliderStyle,
+            min: field.min / scale, max: sliderMax, step,
+            value: Math.max(field.min / scale, Math.min(sliderMax, safeNum)),
+            'aria-label': `${field.label}滑条`,
+            onChange: (event) => onChange(Number(event.target.value) * scale),
+          }),
+          h('input', {
+            type: 'number', style: boxStyle, step, min: field.min / scale, max: field.max / scale,
+            value: value === '' || value == null ? '' : safeNum,
+            'aria-label': `${field.label}数值`,
+            onChange: (event) => onChange(event.target.value === '' ? '' : Number(event.target.value) * scale),
+          }));
       } else {
         control = h('input', {
           ...common,
@@ -689,7 +716,7 @@ window.__ModuleLoader__.load({
         try {
           const payload = { ...(form.values || {}) };
           for (const field of ALL_FIELDS) {
-            if (field.type !== 'number') continue;
+            if (!isNumericField(field)) continue;
             const raw = payload[field.key];
             if (raw === '' || raw === undefined || raw === null) { delete payload[field.key]; continue; }
             const parsed = Number(raw);

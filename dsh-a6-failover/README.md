@@ -1,3 +1,7 @@
+## 0.8.2 设置页权重改用滑条
+
+- 成本/可靠性/延迟权重改为滑条 + 数值输入框，拖动即可调整，也支持输入精确值。
+
 ## 0.8.1 统一门槛与打分的成本口径
 
 - 门槛与打分统一用真实成本倍率 effRatio 判定，超官网 70% 的商家直接剔除；未实测商家按 20% 缓存命中假设估算，不再出现「标价过关、真实成本超标」的商家漏进候选表。
@@ -32,7 +36,7 @@
 
 > 完整技术细节见 [CHANGELOG.md](./CHANGELOG.md) 与 `docs/channels-table*.md`。
 
-# A6 换商家 · dsh-a6-failover 0.8.1
+# A6 换商家 · dsh-a6-failover 0.8.2
 
 插件监测 DSH 中受管的 A6API 请求，默认匹配名称以 `a6api` 开头的 provider。启动时采用平台默认路由，沿用你在平台设置的选路偏好。健康请求直接发送给平台。
 
@@ -103,7 +107,7 @@ $dshDir = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE
 Get-Content (Join-Path $dshDir 'a6-failover/events.jsonl') -Tail 30
 ```
 
-`boot` 事件的 `version` 应为 `0.8.1`。在源码目录运行 `node scripts/self-test.mjs` 可执行本地自检。
+`boot` 事件的 `version` 应为 `0.8.2`。在源码目录运行 `node scripts/self-test.mjs` 可执行本地自检。
 
 ## 许可
 
