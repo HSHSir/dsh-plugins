@@ -141,15 +141,32 @@ test('abort propagates upstream and releases an uncooperative pending read immed
 });
 
 
-test('known access-block response ID is an error, never success or replay after output', async () => {
+test('access-block placeholder is hidden, reported as error, and switched to a working merchant', async () => {
   let successes = 0;
-  const finish = { ...stop, replayState: { response: { responseId: 'resp_freeipblk00000000000000000' } } };
-  const f = fixture([() => chunks(text, finish)], {}, { onSuccess() { successes++; } });
-  await assert.rejects(f.run());
-  assert.equal(successes, 0);
-  assert.equal(f.switches.length, 0);
+  const blockText = { type: 'text-delta', text: '当前网络的请求存在异常，已被临时限制访问，请稍后再试。' };
+  const placeholder = { ...stop, replayState: { response: { responseId: 'resp_freeipblk00000000000000000' } } };
+  const good = { type: 'text-delta', text: '这是换商后的正常回答' };
+  const f = fixture([
+    () => chunks(blockText, placeholder),
+    () => chunks(good, { ...stop, replayState: { response: { responseId: 'resp_normal' } } }),
+  ], {}, { onSuccess() { successes++; } });
+  await f.run();
+  // 占位错误触发换商，而不是原路重试
+  assert.equal(f.switches.length, 1);
   assert.equal(f.failures[0].code, 'A6_UPSTREAM_ACCESS_RESTRICTED');
-  assert.equal(f.seen.at(-1).reason.kind, 'error');
+  // 错误文案从未交给下游，只有换商后的正常回答被交付
+  assert.deepEqual(f.seen.slice(0, -1), [good]);
+  assert.equal(f.seen.at(-1).type, 'finish');
+  assert.ok(!f.seen.some(c => c.type === 'text-delta' && c.text.includes('临时限制访问')));
+  assert.equal(successes, 1);
+});
+
+test('access-block placeholder skips same-route retry and goes straight to switch', async () => {
+  const placeholder = { ...stop, replayState: { response: { responseId: 'resp_freeipblk00000000000000000' } } };
+  const f = fixture([() => chunks(placeholder), () => chunks(text, stop)]);
+  await f.run();
+  assert.equal(f.switches.length, 1);
+  assert.ok(!f.events.some(e => e.type === 'same-route-retry'));
 });
 
 test('ordinary response IDs with normal stop stay successful', async () => {

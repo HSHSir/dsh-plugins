@@ -47,6 +47,12 @@ function failureFacts(error, fallbackMessage) {
 function classifyFailure({ code, status, message }, kind, enabled, sawVisible) {
   // 408/425/429 由服务端或流量状况决定，其余明确的 4xx 需要修正请求。
   const permanent = isPermanentCode(code) || (status >= 400 && status < 500 && ![408, 425, 429].includes(status));
+  // 上游限流占位响应：即使提示文案已作为正文出现，也必须允许换商家重试，
+  // 否则 0.7.2 的 sawVisible 分支会把唯一可恢复的错误判成不可重试。
+  if (code === 'A6_UPSTREAM_ACCESS_RESTRICTED') {
+    return { retryable: Boolean(enabled), recoverable: true, permanent: false,
+      kind, code, message, switchImmediately: true };
+  }
   return {
     retryable: Boolean(enabled) && !sawVisible && !permanent,
     recoverable: Boolean(enabled) && !permanent,
@@ -111,6 +117,18 @@ async function waitFor(pending, signal) {
 
 function errorFinish({ code, message }) {
   return { type: 'finish', reason: { kind: 'error', failure: { code, message } } };
+}
+
+// 上游「免费 IP 拦截」占位响应：正文是一句固定提示，且以正常 stop 结束，
+// 只在 finish 的 responseId 里留下可判定的标记。先把这类文本按住不交给下游，
+// 等 finish 确认后再决定丢弃（换商重试）还是照常交付，避免错误文案冒充成功回答。
+const PLACEHOLDER_RESPONSE_ID = 'resp_freeipblk00000000000000000';
+function isPlaceholderResponse(chunk) {
+  return chunk?.replayState?.response?.responseId === PLACEHOLDER_RESPONSE_ID;
+}
+function isPlaceholderText(chunk) {
+  if (chunk?.type !== 'text-delta' || typeof chunk.text !== 'string') return false;
+  return chunk.text.includes('当前网络的请求存在异常') || chunk.text.includes('已被临时限制访问');
 }
 
 function streamError(failure, verdict) {
@@ -208,6 +226,7 @@ export async function* guardedStream({
     let didThrow = false;
     let ended = false;
     let lastUsage;
+    let heldTexts = [];
     const startedAt = performance.now();
     let firstVisibleAt = 0;
 
@@ -236,17 +255,23 @@ export async function* guardedStream({
           break;
         }
         if (chunk.type === 'finish') {
-          const responseId = chunk.replayState?.response?.responseId;
-          // 已在真实响应中确认的限流占位 ID；不凭自然语言关键词判断正常回答。
-          finish = responseId === 'resp_freeipblk00000000000000000'
-            ? { ...chunk, reason: { kind: 'error', failure: {
+          if (isPlaceholderResponse(chunk)) {
+            // 确认是上游占位响应：丢弃刚才扣住的提示文案，按可恢复错误处理。
+            heldTexts = [];
+            finish = { ...chunk, reason: { kind: 'error', failure: {
               code: 'A6_UPSTREAM_ACCESS_RESTRICTED',
               message: '上游返回临时限制访问提示（正常结束标记无效）；请稍后重试或检查中转站。',
             } } }
-            : chunk;
+          } else {
+            // 不是占位响应：扣住的只是普通文本，照常交付。
+            for (const held of heldTexts) { signal?.throwIfAborted(); yield held; }
+            heldTexts = [];
+            finish = chunk;
+          }
           break;
         }
         if (chunk?.type === 'usage' && chunk.usage && typeof chunk.usage === 'object') lastUsage = chunk.usage;
+        if (isPlaceholderText(chunk)) { heldTexts.push(chunk); continue; }
         const progress = isVisibleChunk(chunk);
         if (!sawVisible && !progress) {
           if (chunk.type === 'heartbeat' || chunk.type === 'ping' || chunk.text === '') continue;
@@ -311,7 +336,8 @@ export async function* guardedStream({
       if (performance.now() >= totalDeadline || verdict.code === 'A6_FIRST_RESPONSE_BUDGET') {
         throw streamError(null, { code: 'A6_FIRST_RESPONSE_BUDGET', message: timeoutMessages.A6_FIRST_RESPONSE_BUDGET });
       }
-      if (retries < (cfg.sameRouteRetries ?? 1) && performance.now() < deadline && verdict.code !== 'A6_FIRST_RESPONSE_TIMEOUT') {
+      if (!verdict.switchImmediately
+        && retries < (cfg.sameRouteRetries ?? 1) && performance.now() < deadline && verdict.code !== 'A6_FIRST_RESPONSE_TIMEOUT') {
         retries += 1;
         emit({ type: 'same-route-retry', ...route, attempt });
         continue;
