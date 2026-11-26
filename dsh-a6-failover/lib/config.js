@@ -136,11 +136,12 @@ export const DEFAULTS = Object.freeze({
    */
   merchantCacheHitRate: null,
   /**
-   * 还没实测过的商家按什么命中率算成本。默认 0（保守）：
-   * 中转站上游多为独立账号/独立池，实测普遍 0~5%，先按「全按输入价」估价，
-   * 等我们自己请求出真命中率再替换。填 0.9 就是旧行为（乐观假设，会挑到不缓存的商家）。
+   * 还没实测过的商家按什么命中率算成本。默认 0.2（用户在用值）：
+   * 中转站上游多为独立账号/独立池，命中率通常比官网低，但按 0（全价）估会把
+   * 没测过的好商家一次性判死；按官网 0.95 估又太乐观。0.2 是折中的商家缓存假设。
+   * 门槛与打分统一用这个口径算出的 effRatio：两侧同一基准，超 maxEffectiveRatio 才剔除。
    */
-  unmeasuredMerchantCacheHitRate: 0,
+  unmeasuredMerchantCacheHitRate: 0.2,
   /** 实际用量配比：输出 token / 输入 token。 */
   outputToInputRatio: 0.03,
   /** 缓存写入占比，默认 0（DSH 侧不单独计这一档）。 */

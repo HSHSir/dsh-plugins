@@ -297,7 +297,7 @@ function cacheFields(benefit) {
 /**
  * 用**当前**实测命中率重判真实成本门槛。
  *
- * 缓存表是 refresh 那一刻的快照：当时没实测的商家按标价倍率过关，后来攒了实测、
+ * 缓存表是 refresh 那一刻的快照：当时没实测的商家按默认命中率假设过关，后来攒了实测、
  * 真实成本可能已经超过 maxEffectiveRatio，但快照里的 effRatio 是旧的、门槛也不会重跑。
  * 每次取候选时按最新实测重算一次，超门槛就当场剔除（返回 null）。
  *
@@ -462,25 +462,14 @@ export function classifyListing(item, channel, cfg, options = {}) {
 
   const priced = priceModel(item, official, listingWorkload, { merchantCacheHitRate: merchantCache.hit });
   if (!priced.ok) return { ok: false, reason: priced.code, priced };
-  // 门槛用**这家自己的真实成本**：商家报价 × 它自己的命中率 × 实测输出比。
+  // 门槛与打分统一用**这家自己的真实成本倍率 priced.ratio（effRatio）**：
+  // 商家报价 × 它自己的命中率（实测优先，没测过用 unmeasuredMerchantCacheHitRate）× 实测输出比。
   //
-  // 曾经用「官网同等命中率」判门槛，理由是「别因为这次没命中就把它踢掉」。但那个口径会把
-  // 「标价便宜、缓存读价极低、实际几乎不命中」的商家放进来：input 0.44 倍看着达标，
-  // 按实测 15% 命中率算真实成本是官网的 2.59 倍。门槛问的是「这家实际花你多少钱」，
-  // 就该用真实成本答。
-  //
-  // 只有真·实测才用真实成本判；没实测的商家交给「官网同等命中率」的标价倍率，
-  // 否则 unmeasured=0 的悲观兜底会把所有新商家一次性判死。
-  const hitIsMeasured = merchantCache.measured === true;
-  // 没实测时退回标价倍率：那是这家「按报价本该花多少」。
-  // 两侧必须用同一个命中率（merchant 与 official 都取 officialCacheHitRate），
-  // 否则比值会被「一边 0.95 一边 0」放大成好几倍。
-  const headlineHit = workload.officialCacheHitRate;
-  const headline = hitIsMeasured
-    ? priced
-    : priceModel(item, official, workload, { merchantCacheHitRate: headlineHit, officialCacheHitRate: headlineHit });
-  const gateRatio = hitIsMeasured ? priced.ratio : (headline.ok ? headline.ratio : priced.ratio);
-  if (gateRatio > limit) {
+  // 曾经未实测商家用「官网同等命中率」的标价倍率判门槛、打分却用 effRatio，两个口径不一致：
+  // 标价倍率 0.23 判通过，打分 effRatio 1.37 排到前面——超门槛商家就这样漏进候选表。
+  // 现在两侧同一个 priced.ratio，超 maxEffectiveRatio 就剔除，口径统一。
+  // 未实测商家不再被 0 命中率悲观判死：默认假设 0.2 命中率，是折中的真实成本估算。
+  if (priced.ratio > limit) {
     return { ok: false, reason: `effective-over-${Math.round(limit * 100)}pct`, priced };
   }
   if (cfg.maxPriceRatio < 1 && priced.categories.input > cfg.maxPriceRatio) {

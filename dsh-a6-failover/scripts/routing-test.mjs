@@ -13,8 +13,10 @@ const a = 'a6api-1';
 const b = 'a6api-2';
 const cfg = normalizeConfig({ defaultControlBase: 'https://example.invalid', accessToken: 'mock', userId: '5',
   cacheWeight: 0, controlTimeoutMs: 3000, providerOverrides: { [a]: { tokenId: 10 }, [b]: { tokenId: 10 } } });
+// input 从 0.1 倍官网起（按 20% 命中假设真实成本 0.62 < 0.7 门槛），本文件测的是
+// 「缓存去重 + 最快一半」的筛选逻辑，让全部 205 家先过成本门槛再筛。
 const rows = Array.from({ length: 205 }, (_, i) => ({ channel_id: i + 1, model_name: model,
-  listing_id: i + 1, input_price_micros: 300000 - i * 100, output_price_micros: 1200000,
+  listing_id: i + 1, input_price_micros: 100000 - i * 200, output_price_micros: 400000,
   cache_read_price_micros: 6000, recent_p50_ms: 100 + i, recent_success_rate: 9990, sample_count: 1000,
   official_price: { input_price_micros: 1000000, output_price_micros: 4000000, cache_read_price_micros: 20000 } }));
 

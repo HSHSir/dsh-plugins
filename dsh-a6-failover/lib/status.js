@@ -100,6 +100,7 @@ export function buildStatus({ cfg, store, switcher, version = '', now = Date.now
       cacheHitRate: cfg.cacheHitRate,
       officialCacheHitRate: cfg.officialCacheHitRate,
       merchantCacheHitRate: cfg.merchantCacheHitRate ?? 'measured',
+      unmeasuredMerchantCacheHitRate: cfg.unmeasuredMerchantCacheHitRate,
       outputToInputRatio: cfg.outputToInputRatio,
       cacheWriteShare: cfg.cacheWriteShare,
       fxSource: 'site-realtime',

@@ -212,8 +212,12 @@ eq('没站点数据的仍用实测', rankedSite.find((c) => c.channelId === 2).c
   const goodHit = new Map([[4137, { rate: 0.95, samples: 6 }]]);
   eq('命中率高时同一家可以入选', parseCandidates(payloadOne, 'm1', cfg, { measuredRates: goodHit }).candidates.length, 1);
 
-  // 完全没有实测的新商家：不能因为 unmeasured=0 就被一次性打死
-  eq('未实测的新商家仍按标价判定，不会全灭', parseCandidates(payloadOne, 'm1', cfg, {}).candidates.length, 1);
+  // 完全没实测的新商家：门槛与打分统一用真实成本口径——按默认 20% 命中率估算。
+  // 这家标价虽便宜（input 0.437 倍），但 20% 命中下真实成本超 0.7，应被剔除，
+  // 不再像旧口径那样用标价倍率放它过关（那会让超线商家漏进候选表）。
+  const noMeasure = parseCandidates(payloadOne, 'm1', cfg, {});
+  eq('未实测商家按真实成本口径判，超线同样剔除', noMeasure.candidates.length, 0);
+  eq('未实测剔除原因记为成本超线', Object.keys(noMeasure.rejected)[0], 'effective-over-70pct');
 }
 
 // ---- 3c. 上下文窗口下限：只淘汰「有证据」的小窗口商家 ----
@@ -311,9 +315,9 @@ eq('没站点数据的仍用实测', rankedSite.find((c) => c.channelId === 2).c
   });
   const latPayload = { data: [
     // 历史 p50 很快（1000），但最近一次真实响应 9000ms
-    { channel_id: 11, listings: [mk(11, 1000, 9000, 300000)] },
+    { channel_id: 11, listings: [mk(11, 1000, 9000, 100000)] },
     // 历史 p50 一般（3000），最近一次真实响应 1500ms
-    { channel_id: 12, listings: [mk(12, 3000, 1500, 300000)] },
+    { channel_id: 12, listings: [mk(12, 3000, 1500, 100000)] },
   ] };
   const c = parseCandidates(latPayload, 'm1', cfg, {}).candidates;
   const byId = new Map(c.map(x => [x.channelId, x]));
@@ -325,7 +329,7 @@ eq('没站点数据的仍用实测', rankedSite.find((c) => c.channelId === 2).c
   eq('最近实测慢的那家排在后面（p50 没有替它说话）', lr[0].channelId, 12);
 
   // 站点没测过时退回 p50，并标明来源
-  const noTest = mk(13, 2500, 0, 300000);
+  const noTest = mk(13, 2500, 0, 100000);
   const c13 = parseCandidates({ data: [{ channel_id: 13, listings: [noTest] }] }, 'm1', cfg, {}).candidates[0];
   eq('没测过时退回 p50', c13.siteLatencyMs, 2500);
   eq('来源标明是 p50 兜底', c13.siteLatencyOrigin, 'p50-fallback');
@@ -537,7 +541,7 @@ async function drain(stream) { const out = []; for await (const c of stream) out
 {
   const originalFetch = globalThis.fetch;
   const controlBase = 'https://example.com';
-  const paced = { data: [1, 2, 3, 4].map((id, i) => ({ channel_id: id, listings: [mkListing(id, 300000, 1000 + i * 100 + (i > 1 ? 300 : 0))] })) };
+  const paced = { data: [1, 2, 3, 4].map((id, i) => ({ channel_id: id, listings: [mkListing(id, 100000, 1000 + i * 100 + (i > 1 ? 300 : 0))] })) };
 
   /**
    * @param {{takeOver:boolean, externalChannel:number, breakPin?:boolean}} options
