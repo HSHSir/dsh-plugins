@@ -1,3 +1,10 @@
+## 0.8.6 工具数量超限 400 也允许换商
+
+- 现象：请求携带 342 个工具声明时，某些商家上游返回 400「Chat tools carries 342 declarations; the limit is 256」，插件当成永久错误直接判失败。
+- 跨商家实测：同样 342 工具请求，当前商家 400，换 ch5795/5276/7440/7429 全部 200——是部分商家的上游限制，换商可绕开，并非模型通用硬限制。
+- 修复：stream-guard.js 新增 isToolLimitFacts 识别「tools ... declarations ... limit N」字样，判为可换商、非永久、立即换商（reason=merchant-tool-limit）；只匹配明确的上限错误，避免把真正的请求格式错误误判。
+- 测试：self-test 156 项（新增 4 项工具超限断言）、node --test 41/41、编码检查全绿。
+
 ## 0.8.5 输出后卡住时换商继续当前任务
 
 - 现象：商家输出一段正文后停滞（`A6_STREAM_STALL`，post-output stall），插件虽隔离了问题商家并为下一轮绑了新商家，但当前轮被判失败、要用户手动重发。

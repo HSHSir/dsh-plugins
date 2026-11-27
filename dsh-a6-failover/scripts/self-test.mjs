@@ -68,6 +68,16 @@ const near = (name, actual, expected, tol = 1e-6) => {
   });
   eq('普通 INVALID_REQUEST → 仍永久不换商', plainErr.permanent, true);
   eq('普通 INVALID_REQUEST → 不可换商', plainErr.retryable, false);
+  // 商家上游工具数量上限（实测 342 工具当前商家 400、换 4 家全 200）：应允许换商绕开。
+  const toolLimitErr = classifyAttempt({
+    finish: { reason: { kind: 'error', failure: { code: 'INVALID_REQUEST', status: 400,
+      message: '请求参数不正确', reason: '上游说明：Chat tools carries 342 declarations; the limit is 256' } } },
+    ended: true, cfg: cfgSwitch,
+  });
+  eq('工具数量超限 → 可换商', toolLimitErr.retryable, true);
+  eq('工具数量超限 → 非永久', toolLimitErr.permanent, false);
+  eq('工具数量超限 → 立即换商', toolLimitErr.switchImmediately, true);
+  eq('工具数量超限 → 原因标记', toolLimitErr.reason, 'merchant-tool-limit');
 }
 
 // tokenPlainKey 必须把 connectionMode/directProbeMs 一路传给 a6Request：

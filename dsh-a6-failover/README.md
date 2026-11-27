@@ -1,3 +1,7 @@
+## 0.8.6 工具数量超限 400 也允许换商
+
+- 部分商家上游对工具声明数量有较低上限（如 256），超过返回 400；换一家即可通过，插件现在遇到这类错误会立即换商重放，而不是直接判失败。
+
 ## 0.8.5 输出后卡住时换商继续当前任务
 
 - 商家出了一段正文后卡住时，若这段输出没有工具调用，直接换商重放当前轮继续任务，不再把整轮判失败需要手动重发；有工具调用时保持不重放，避免重复执行副作用。
@@ -48,7 +52,7 @@
 
 > 完整技术细节见 [CHANGELOG.md](./CHANGELOG.md) 与 `docs/channels-table*.md`。
 
-# A6 换商家 · dsh-a6-failover 0.8.5
+# A6 换商家 · dsh-a6-failover 0.8.6
 
 插件监测 DSH 中受管的 A6API 请求，默认匹配名称以 `a6api` 开头的 provider。启动时采用平台默认路由，沿用你在平台设置的选路偏好。健康请求直接发送给平台。
 
@@ -121,7 +125,7 @@ $dshDir = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE
 Get-Content (Join-Path $dshDir 'a6-failover/events.jsonl') -Tail 30
 ```
 
-`boot` 事件的 `version` 应为 `0.8.5`。在源码目录运行 `node scripts/self-test.mjs` 可执行本地自检。
+`boot` 事件的 `version` 应为 `0.8.6`。在源码目录运行 `node scripts/self-test.mjs` 可执行本地自检。
 
 ## 许可
 

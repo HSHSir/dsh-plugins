@@ -61,6 +61,17 @@ function isMerchantFormatFacts({ code, status, detail }) {
     && /required|missing|is required|不支持|缺少|必填/i.test(detail);
 }
 
+/**
+ * 部分中转站的上游对单次请求的工具声明数量设了较低上限（如 256），超过就 400；
+ * 同一请求换一家就能通过（实测：342 工具在当前商家 400，换 4 家全部 200）。
+ * 只匹配明确带「tools ... declarations ... limit」字样的上限错误，避免把其它
+ * invalid_request（真正请求格式错误，所有商家都会 400）误判成可换商。
+ */
+function isToolLimitFacts({ code, status, detail }) {
+  if (!(code === 'INVALID_REQUEST' || code === 'INVALID' || (status >= 400 && status < 500))) return false;
+  return /tools?\b/i.test(detail) && /declarations?\b/i.test(detail) && /limit\s*(?:is|:)?\s*\d+/i.test(detail);
+}
+
 function classifyFailure({ code, status, message, detail }, kind, enabled, sawVisible, sawToolCall) {
   // 408/425/429 由服务端或流量状况决定，其余明确的 4xx 需要修正请求。
   const permanent = isPermanentCode(code) || (status >= 400 && status < 500 && ![408, 425, 429].includes(status));
@@ -68,6 +79,11 @@ function classifyFailure({ code, status, message, detail }, kind, enabled, sawVi
   if (isMerchantFormatFacts({ code, status, detail })) {
     return { retryable: Boolean(enabled), recoverable: true, permanent: false,
       kind, code, message, switchImmediately: true, reason: 'merchant-format' };
+  }
+  // 商家上游的工具数量上限：换一家就能用（实测），放行换商绕开。
+  if (isToolLimitFacts({ code, status, detail })) {
+    return { retryable: Boolean(enabled), recoverable: true, permanent: false,
+      kind, code, message, switchImmediately: true, reason: 'merchant-tool-limit' };
   }
   // 上游限流占位响应：即使提示文案已作为正文出现，也必须允许换商家重试，
   // 否则 0.7.2 的 sawVisible 分支会把唯一可恢复的错误判成不可重试。
