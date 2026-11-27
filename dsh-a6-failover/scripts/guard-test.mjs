@@ -95,16 +95,27 @@ test('each replacement merchant gets its own full first response budget', async 
   assert.ok(f.attempts.every(a => a.opts.signal.aborted));
 });
 
-for (const first of [text, { type: 'reasoning-delta', text: 'hmm' }, { type: 'block-start', blockType: 'tool-call' }]) {
-  test(`post-output stall after ${first.type} preserves output and prevents replay`, async () => {
-    const f = fixture([() => (async function* () { yield first; for (;;) { await sleep(5); yield { type: 'ping' }; } })()], { streamStallTimeoutMs: 20 });
-    await assert.rejects(f.run, { code: 'A6_STREAM_STALL' });
-    assert.deepEqual(f.seen[0], first);
-    assert.equal(f.failures[0].postContent, true);
-    assert.equal(f.failures[0].recoverable, true);
-    assert.equal(f.switches.length, 0);
-  });
-}
+const stallFirst = () => (async function* () { yield text; for (;;) { await sleep(5); yield { type: 'ping' }; } })();
+const stallWithTool = () => (async function* () { yield { type: 'block-start', blockType: 'tool-call' }; for (;;) { await sleep(5); yield { type: 'ping' }; } })();
+
+test('post-output text stall switches merchant and replays on the replacement to continue the task', async () => {
+  // 纯文本输出后卡住：没有工具副作用，换商重放是安全的，当前这轮任务应继续。
+  const f = fixture([stallFirst, () => chunks(text, stop)], { streamStallTimeoutMs: 20 });
+  await f.run();
+  assert.equal(f.switches.length, 1);
+  assert.equal(f.failures[0].code, 'A6_STREAM_STALL');
+  assert.equal(f.failures[0].postContent, true);
+  assert.deepEqual(f.seen.at(-1), stop);
+});
+
+test('post-output stall with a tool call does not replay (avoids repeated side effects)', async () => {
+  // 已经发出工具调用块后卡住：重放会重复执行副作用，保持不可重试。
+  const f = fixture([stallWithTool, () => chunks(text, stop)], { streamStallTimeoutMs: 20 });
+  await assert.rejects(f.run, { code: 'A6_STREAM_STALL' });
+  assert.equal(f.switches.length, 0);
+  assert.equal(f.failures[0].postContent, true);
+  assert.equal(f.failures[0].recoverable, true);
+});
 
 test('consumer backpressure does not trigger stall', async () => {
   const f = fixture([() => chunks(text, stop)], { streamStallTimeoutMs: 5 });

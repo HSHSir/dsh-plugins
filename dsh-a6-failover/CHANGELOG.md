@@ -1,3 +1,11 @@
+## 0.8.5 输出后卡住时换商继续当前任务
+
+- 现象：商家输出一段正文后停滞（`A6_STREAM_STALL`，post-output stall），插件虽隔离了问题商家并为下一轮绑了新商家，但当前轮被判失败、要用户手动重发。
+- 根因：`stream-guard.js` 的 `classifyFailure` 对 `sawVisible`（已有输出）一律 `retryable=false`——本是防止重放重复执行工具调用副作用，但把"纯文本后卡住"也误伤了。
+- 修复：跟踪本次流是否出现过工具调用块（`sawToolCall`）。`A6_STREAM_STALL` 且已有输出但**无工具调用**时，判为可重试且 `switchImmediately=true`（同一家已卡，原路重试无意义，直接换商重放当前轮）；出现过工具调用则保持不可重试，防止重复副作用。
+- 日志实证：ch5565 stall → 隔离 → 换到 ch7394（2 秒），但当前轮仍抛错；修复后这类纯文本 stall 在当前轮换商重放继续任务。
+- 测试：guard-test 新增 2 项（纯文本 stall 换商重放 / 带工具 stall 不重放）；self-test、node --test、编码检查全绿。
+
 ## 0.8.4 生成速度实测 + 延迟字段改名
 
 - **新增「生成速度」**（token/秒）：取自本机每次真实请求的 `usage.outputTokens` 除以「首个可见字到流结束」的毫秒数。

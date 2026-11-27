@@ -61,7 +61,7 @@ function isMerchantFormatFacts({ code, status, detail }) {
     && /required|missing|is required|不支持|缺少|必填/i.test(detail);
 }
 
-function classifyFailure({ code, status, message, detail }, kind, enabled, sawVisible) {
+function classifyFailure({ code, status, message, detail }, kind, enabled, sawVisible, sawToolCall) {
   // 408/425/429 由服务端或流量状况决定，其余明确的 4xx 需要修正请求。
   const permanent = isPermanentCode(code) || (status >= 400 && status < 500 && ![408, 425, 429].includes(status));
   // 商家特有的非标准格式要求（如 reasoning_content）：换一家就能用，放行换商。
@@ -75,17 +75,23 @@ function classifyFailure({ code, status, message, detail }, kind, enabled, sawVi
     return { retryable: Boolean(enabled), recoverable: true, permanent: false,
       kind, code, message, switchImmediately: true };
   }
+  // 出了一段正文后卡住（post-output stall）：这是中转商家中途掉线，不是请求本身有问题。
+  // 没有工具调用副作用时重放安全——允许换商重跑，让当前这轮任务继续，而不是把整轮判失败。
+  // 一旦本次输出里出现过工具调用块，重放会重复执行已发生的副作用，保持不可重试。
+  const stallWithoutTools = code === 'A6_STREAM_STALL' && sawVisible && !sawToolCall;
   return {
-    retryable: Boolean(enabled) && !sawVisible && !permanent,
+    retryable: Boolean(enabled) && (!sawVisible || stallWithoutTools) && !permanent,
     recoverable: Boolean(enabled) && !permanent,
     permanent,
     kind,
     code,
     message: `${status ? `HTTP ${status} ` : ''}${message}`,
+    // 同一家已经卡住了，原路重试只会再卡一次；直接换商才有意义。
+    ...(stallWithoutTools ? { reason: 'post-output-stall-no-tools', switchImmediately: true } : {}),
   };
 }
 
-export function classifyAttempt({ finish, thrown, didThrow = Boolean(thrown), sawVisible, ended, cfg, signalAborted }) {
+export function classifyAttempt({ finish, thrown, didThrow = Boolean(thrown), sawVisible, sawToolCall, ended, cfg, signalAborted }) {
   if (signalAborted) return { retryable: false, kind: 'aborted-by-user', code: '', message: '' };
 
   if (didThrow) {
@@ -94,7 +100,7 @@ export function classifyAttempt({ finish, thrown, didThrow = Boolean(thrown), sa
       return { ...facts, retryable: false, kind: 'cancelled' };
     }
     const enabled = facts.code === 'EMPTY_RESPONSE' ? cfg.switchOnEmpty : cfg.switchOnThrown;
-    return classifyFailure(facts, 'thrown', enabled, sawVisible);
+    return classifyFailure(facts, 'thrown', enabled, sawVisible, sawToolCall);
   }
 
   if (finish) {
@@ -103,7 +109,7 @@ export function classifyAttempt({ finish, thrown, didThrow = Boolean(thrown), sa
       const facts = failureFacts(reason, reason.kind === 'error' ? '模型返回 error' : '模型流被中断');
       if (CANCEL_CODES.has(facts.code)) return { ...facts, retryable: false, kind: 'cancelled' };
       const enabled = facts.code === 'EMPTY_RESPONSE' ? cfg.switchOnEmpty : cfg.switchOnFinishError;
-      return classifyFailure(facts, `finish-${reason.kind}`, enabled, sawVisible);
+      return classifyFailure(facts, `finish-${reason.kind}`, enabled, sawVisible, sawToolCall);
     }
     if (!sawVisible) {
       return {
@@ -257,6 +263,7 @@ export async function* guardedStream({
     const buffered = [];
     let iterator;
     let sawVisible = false;
+    let sawToolCall = false;
     let finish = null;
     let thrown;
     let didThrow = false;
@@ -308,6 +315,9 @@ export async function* guardedStream({
         }
         if (chunk?.type === 'usage' && chunk.usage && typeof chunk.usage === 'object') lastUsage = chunk.usage;
         if (isPlaceholderText(chunk)) { heldTexts.push(chunk); continue; }
+        if (chunk?.type === 'tool-call-delta' || (chunk?.type === 'block-start' && chunk.blockType === 'tool-call')) {
+          sawToolCall = true;
+        }
         const progress = isVisibleChunk(chunk);
         if (!sawVisible && !progress) {
           if (chunk.type === 'heartbeat' || chunk.type === 'ping' || chunk.text === '') continue;
@@ -343,7 +353,7 @@ export async function* guardedStream({
     }
 
     signal?.throwIfAborted();
-    const verdict = classifyAttempt({ finish, thrown, didThrow, sawVisible, ended, cfg });
+    const verdict = classifyAttempt({ finish, thrown, didThrow, sawVisible, sawToolCall, ended, cfg });
     // 首块时间：这是用户真正感知的等待，站点报的 p50 是群体口径，二者不是一回事。
     const latencyMs = Math.round((firstVisibleAt || performance.now()) - startedAt);
     /**

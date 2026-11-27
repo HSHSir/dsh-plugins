@@ -1,3 +1,11 @@
+## 0.8.5 输出后卡住时换商继续当前任务
+
+- 商家出了一段正文后卡住时，若这段输出没有工具调用，直接换商重放当前轮继续任务，不再把整轮判失败需要手动重发；有工具调用时保持不重放，避免重复执行副作用。
+
+## 0.8.4 生成速度实测 + 延迟字段改名
+
+- 新增「生成速度」（token/秒，本机实测）；设置页「候选延迟 P50 / 打分用延迟」合并为「首字延迟」，商家表新增「首字延迟 / 生成速度」两列。
+
 ## 0.8.3 新增「换一家」按钮
 
 - 「选最佳商家」重排并从第 1 家开始；「换一家」沿该排序依次切到第 2/3/4 家，摘要显示「第 N/M 家」。
@@ -40,7 +48,7 @@
 
 > 完整技术细节见 [CHANGELOG.md](./CHANGELOG.md) 与 `docs/channels-table*.md`。
 
-# A6 换商家 · dsh-a6-failover 0.8.3
+# A6 换商家 · dsh-a6-failover 0.8.5
 
 插件监测 DSH 中受管的 A6API 请求，默认匹配名称以 `a6api` 开头的 provider。启动时采用平台默认路由，沿用你在平台设置的选路偏好。健康请求直接发送给平台。
 
@@ -113,7 +121,7 @@ $dshDir = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE
 Get-Content (Join-Path $dshDir 'a6-failover/events.jsonl') -Tail 30
 ```
 
-`boot` 事件的 `version` 应为 `0.8.3`。在源码目录运行 `node scripts/self-test.mjs` 可执行本地自检。
+`boot` 事件的 `version` 应为 `0.8.5`。在源码目录运行 `node scripts/self-test.mjs` 可执行本地自检。
 
 ## 许可
 
