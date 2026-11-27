@@ -350,6 +350,13 @@ export function refreshCandidateCache(candidate, cfg, measured, now = Date.now()
   // siteLatencyMs 是站点自己的值，这里不动它——只有本机实测首块延迟够样本时才用它覆盖，
   // 那是「我们真打了这一家」的证据，比站点自报更可信。p50 不参与打分，只更新门槛用的 realP50Ms。
   const measuredLatency = stat && stat.p50Ms > 0 && stat.latencySamples >= 2 ? Math.round(stat.p50Ms) : 0;
+  // 生成速度只有本机实测这一个来源：站点没有吞吐字段，拿任何东西反推都是编的。
+  const measuredSpeed = measured instanceof Map ? measured.get(candidate.channelId) : null;
+  const speedFields = {
+    tokensPerSecond: Number.isFinite(measuredSpeed?.tokensPerSecond) && measuredSpeed.tokensPerSecond > 0
+      ? measuredSpeed.tokensPerSecond : null,
+    speedSamples: Math.round(Number(measuredSpeed?.speedSamples || 0)) || 0,
+  };
   const live = stat ? {
     measuredCalls: Number(stat.calls || 0),
     measuredFails: Number((stat.fails || 0).toFixed(2)),
@@ -360,10 +367,10 @@ export function refreshCandidateCache(candidate, cfg, measured, now = Date.now()
   } : {};
   if (candidate.cacheSource === 'site-rate'
       && validSnapshotTime(candidate.cacheSnapshotAt, now, candidate.cacheSnapshotExpiresAt)) {
-    return { ...candidate, ...live };
+    return { ...candidate, ...live, ...speedFields };
   }
   const benefit = measuredCacheOf(candidate.channelId, measured, cfg) ?? cacheCostBenefit(candidate.cacheReadRatio, cfg);
-  return { ...candidate, ...cacheFields(benefit), ...live };
+  return { ...candidate, ...cacheFields(benefit), ...live, ...speedFields };
 }
 
 /**
@@ -691,6 +698,9 @@ export function trimCandidates(ranked, limit = 24) {
     p50Ms: candidate.p50Ms,
     siteLatencyMs: candidate.siteLatencyMs ?? null,
     siteLatencyOrigin: candidate.siteLatencyOrigin || 'none',
+    tokensPerSecond: Number.isFinite(candidate.tokensPerSecond) && candidate.tokensPerSecond > 0
+      ? Number(candidate.tokensPerSecond.toFixed(1)) : null,
+    speedSamples: Math.round(Number(candidate.speedSamples || 0)),
     failRate: candidate.failRate,
     successRate: Number(candidate.successRate.toFixed(4)),
     cacheRate24h: Number.isFinite(candidate.cacheRate24h) ? Number(candidate.cacheRate24h.toFixed(4)) : null,

@@ -244,7 +244,7 @@ export function apply(ctx, config) {
         const sessionId = String(options?.sessionId || '');
         if (sessionId) sessionHints.delete(sessionId);
       },
-      onUsage: (usage, route) => {
+      onUsage: (usage, route, meta) => {
         if (!requestPin || activeSwitcher !== switcher || routeAtOpen?.provider !== route.provider
           || routeAtOpen?.model !== route.model || requestPin !== activeSwitcher.activeChannel(route.provider, route.model)) return;
         const channelId = requestPin.channelId;
@@ -255,7 +255,7 @@ export function apply(ctx, config) {
         if (!(cacheRead + cacheWrite + uncachedInput > 0)) return;
         const stat = store.noteUsage({
           controlBase: requestPin.controlBase, model: route.model, channelId, cacheRead, cacheWrite, uncachedInput,
-          output: outputTokens,
+          output: outputTokens, generationMs: Number(meta?.generationMs || 0),
         });
         if (stat) {
           store.logEvent({
@@ -266,6 +266,9 @@ export function apply(ctx, config) {
             rate: Number(stat.rate.toFixed(4)),
             samples: Math.round(stat.samples),
             promptTokens: Math.round(stat.promptTokens),
+            ...(Number(meta?.generationMs || 0) > 0 && outputTokens > 0
+              ? { tps: Number((outputTokens / (Number(meta.generationMs) / 1000)).toFixed(1)), outputTokens }
+              : {}),
           });
         }
       },

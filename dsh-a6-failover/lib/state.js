@@ -56,7 +56,7 @@ function emptyState() {
 /** 按时间衰减一次累计量；没记过 at 的行当作空。 */
 function decayUsage(entry, nowMs) {
   const at = Number(entry?.at || 0);
-  if (!at) return { cacheRead: 0, cacheWrite: 0, uncachedInput: 0, samples: 0, at: 0 };
+  if (!at) return { cacheRead: 0, cacheWrite: 0, uncachedInput: 0, output: 0, generationMs: 0, speedSamples: 0, samples: 0, at: 0 };
   const age = Math.max(0, nowMs - at);
   const factor = Math.pow(0.5, age / USAGE_HALF_LIFE_MS);
   return {
@@ -64,6 +64,9 @@ function decayUsage(entry, nowMs) {
     cacheWrite: Number(entry.cacheWrite || 0) * factor,
     uncachedInput: Number(entry.uncachedInput || 0) * factor,
     output: Number(entry.output || 0) * factor,
+    // 生成耗时按同一半衰期一起缩放：两者同乘一个系数，比值（token/秒）不变。
+    generationMs: Number(entry.generationMs || 0) * factor,
+    speedSamples: Number(entry.speedSamples || 0) * factor,
     samples: Number(entry.samples || 0) * factor,
     at: nowMs,
   };
@@ -87,7 +90,18 @@ function usageStat(entry) {
     promptTokens,
     // 输出/输入比：同样标价下，输出贵三倍的商家实际花得更多。
     outputRatio: output > 0 ? output / promptTokens : 0,
+    // 生成速度：只累加「同时拿到输出 token 数与这段耗时」的样本，否则比值没有意义。
+    tokensPerSecond: generationSpeed(entry),
+    speedSamples: Number(entry.speedSamples || 0),
   };
+}
+
+/** 生成速度（token/秒）：output / generationMs。没有可信耗时就是 0。 */
+function generationSpeed(entry) {
+  const output = Number(entry?.output || 0);
+  const ms = Number(entry?.generationMs || 0);
+  if (!(output > 0) || !(ms > 0)) return 0;
+  return output / (ms / 1000);
 }
 
 /** 按时间衰减一次渠道成败累计；没记过 at 的行当作空。 */
@@ -346,7 +360,7 @@ export function createStore({ dshHome = resolveDshHome(), logEvents = true, now 
      * 记一次真实请求的用量。只有「知道这次打的是哪家」时才记，否则数据会串味。
      * @param {{ model?: string, channelId?: number, cacheRead?: number, cacheWrite?: number, uncachedInput?: number }} row
      */
-    noteUsage({ controlBase = '', model = '', channelId = 0, cacheRead = 0, cacheWrite = 0, uncachedInput = 0, output = 0 } = {}) {
+    noteUsage({ controlBase = '', model = '', channelId = 0, cacheRead = 0, cacheWrite = 0, uncachedInput = 0, output = 0, generationMs = 0 } = {}) {
       const id = Number(channelId);
       const values = [cacheRead, cacheWrite, uncachedInput].map(Number);
       if (!Number.isSafeInteger(id) || id <= 0 || !values.every((value) => Number.isSafeInteger(value) && value >= 0)
@@ -356,18 +370,23 @@ export function createStore({ dshHome = resolveDshHome(), logEvents = true, now 
       const nowMs = now();
       const base = decayUsage(state.usage[key], nowMs);
       const outTokens = Number.isSafeInteger(Number(output)) && Number(output) > 0 ? Number(output) : 0;
+      // 只有「输出 token 与这段耗时都成立」时才算一次速度样本，否则分母不干净。
+      const genMs = Number.isFinite(Number(generationMs)) && Number(generationMs) >= 200 ? Number(generationMs) : 0;
+      const speedOk = outTokens > 0 && genMs > 0;
       const next = {
         cacheRead: Number(base.cacheRead || 0) + values[0],
         cacheWrite: Number(base.cacheWrite || 0) + values[1],
         uncachedInput: Number(base.uncachedInput || 0) + values[2],
         output: Number(base.output || 0) + outTokens,
+        generationMs: Number(base.generationMs || 0) + (speedOk ? genMs : 0),
+        speedSamples: Number(base.speedSamples || 0) + (speedOk ? 1 : 0),
         samples: Number(base.samples || 0) + 1,
         at: nowMs,
       };
       record(state.usage, key, next, 1024);
       return usageStat(next);
     },
-    /** 某模型下所有商家的实测命中率：Map<channelId, { rate, samples, promptTokens }>。 */
+    /** 某模型下所有商家的实测命中率与生成速度：Map<channelId, { rate, samples, promptTokens, tokensPerSecond }>。 */
     usageRates(model, controlBase = '') {
       const out = new Map();
       const scope = controlBase ? `${controlBase}|` : '';

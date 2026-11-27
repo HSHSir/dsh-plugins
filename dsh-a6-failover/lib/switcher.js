@@ -736,7 +736,10 @@ export function createSwitcher({ cfg, store, resolver, log, routing = () => ({ s
         p50Ms: measured?.latencySamples >= 2 ? measured.p50Ms : row?.realP50Ms ?? null,
         latencySource: measured?.latencySamples >= 2 ? 'measured' : row?.latencySource,
         siteLatencyMs: row?.siteLatencyMs ?? null,
-        siteLatencyOrigin: row?.siteLatencyOrigin ?? 'none' };
+        siteLatencyOrigin: row?.siteLatencyOrigin ?? 'none',
+        // 生成速度只有本机实测：站点不提供吞吐字段，宁可不显示也不拿 p50 反推。
+        tokensPerSecond: Number.isFinite(cache?.tokensPerSecond) && cache.tokensPerSecond > 0 ? cache.tokensPerSecond : null,
+        speedSamples: Math.round(Number(cache?.speedSamples || 0)) || 0 };
     });
     const merchants = [...owned.entries()].flatMap(([key, claim]) => {
       const row = lastSwitch.get(key);

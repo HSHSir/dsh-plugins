@@ -637,8 +637,10 @@ window.__ModuleLoader__.load({
               ['商家 / 渠道', [r.supplierName, r.channelName, r.channelId ? `#${r.channelId}` : null].filter(Boolean).join(' / ') || '未确认'],
               ['预计成本 / 百万输入 token', money(r.cnyPerMillion)],
               ['缓存命中率', source && Number.isFinite(r.cacheRate) ? `${pct(r.cacheRate)}（${source}）` : '无观测数据'],
-              ['候选延迟 P50', Number.isFinite(r.p50Ms) ? `${r.p50Ms} ms（${({ measured: '本机首块实测', 'site-ttft': '站点首块统计', site: '站点延迟指标' })[r.latencySource] || '来源待确认'}）` : '无数据'],
-              ['打分用延迟', Number.isFinite(r.siteLatencyMs) ? `${r.siteLatencyMs} ms（${({ 'site-test': '站点最近实测', 'p50-fallback': 'p50 兜底', 'measured-first-block': '本机首块实测', none: '无数据' })[r.siteLatencyOrigin] || '来源待确认'}）` : '无数据'],
+              ['首字延迟', Number.isFinite(r.siteLatencyMs) ? `${r.siteLatencyMs} ms（${({ 'site-test': '站点最近实测', 'p50-fallback': '站点统计兜底', 'measured-first-block': '本机实测', none: '无数据' })[r.siteLatencyOrigin] || '来源待确认'}）` : '无数据'],
+              ['生成速度', Number.isFinite(r.tokensPerSecond) && r.tokensPerSecond > 0
+                ? `${r.tokensPerSecond.toFixed(1)} token/s（本机实测${r.speedSamples ? ` ${r.speedSamples} 次` : ''}）`
+                : '暂无实测'],
             ] }),
             h('div', { style: { ...S.row, marginTop: 8, justifyContent: 'flex-start' } },
               h('button', { style: S.btnPrimary, disabled: (busyReset || busyNext) || !enabled,
@@ -896,7 +898,7 @@ window.__ModuleLoader__.load({
                 : null,
               h('table', { style: S.table },
                 h('thead', null, h('tr', null,
-                  ['排名 / 商家', '总分 ↓', '实际/官方', '¥/M输入', '缓存数据', '上下文', 'p50', '成功率'].map((label) => h('th', { key: label, style: S.th }, label)))),
+                  ['排名 / 商家', '总分 ↓', '实际/官方', '¥/M输入', '缓存数据', '上下文', '首字延迟', '生成速度', '成功率'].map((label) => h('th', { key: label, style: S.th }, label)))),
                 h('tbody', null, (channel.candidates || []).map((candidate, index) => h('tr', { key: candidate.channelId },
                   h('td', { style: S.td }, `${index + 1}. ${candidate.channelId} ${candidate.channelName || ''}`.trim()),
                    h('td', { style: S.td }, Number.isFinite(candidate.score) ? candidate.score.toFixed(4) : '—'),
@@ -913,7 +915,10 @@ window.__ModuleLoader__.load({
                   h('td', { style: S.td }, Number(candidate.contextWindow) > 0
                     ? `${Math.round(Number(candidate.contextWindow) / 1000)}K${candidate.contextWindowSource === 'measured' ? '（实测）' : ''}`
                     : '未知'),
-                  h('td', { style: S.td }, `${candidate.p50Ms} ms`),
+                  h('td', { style: S.td }, Number.isFinite(candidate.siteLatencyMs) && candidate.siteLatencyMs > 0
+                    ? `${candidate.siteLatencyMs} ms` : '无数据'),
+                  h('td', { style: S.td }, Number.isFinite(candidate.tokensPerSecond) && candidate.tokensPerSecond > 0
+                    ? `${Number(candidate.tokensPerSecond).toFixed(1)} t/s` : '暂无'),
                   h('td', { style: S.td }, pct(candidate.successRate))))))))),
 
         // 事件

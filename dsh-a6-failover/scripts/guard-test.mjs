@@ -180,3 +180,27 @@ test('ordinary response IDs with normal stop stay successful', async () => {
   await f.run();
   assert.equal(f.failures.length, 0);
 });
+
+test('generation speed is measured from the first visible chunk to the stream end', async (t) => {
+  let now = 1000;
+  t.mock.method(performance, 'now', () => now);
+  // 首块在 300ms 处出现，之后每块推 100ms，共 4 块正文；usage 报 40 个输出 token。
+  const slowStartFastBody = () => (async function* () {
+    now += 300; yield text;
+    for (let i = 0; i < 4; i += 1) { now += 100; yield { type: 'text-delta', text: `t${i}` }; }
+    yield { type: 'usage', usage: { inputTokens: 10, outputTokens: 40 } };
+    yield stop;
+  })();
+  let success = null, usageMeta = null;
+  // 首块超时要放大，否则这里推进的模拟时钟会先撞上默认的 200ms 截止。
+  const f = fixture([slowStartFastBody], { firstResponseTimeoutMs: 10000, firstResponseBudgetMs: 10000, streamStallTimeoutMs: 10000 }, {
+    onSuccess(_route, meta) { success = meta; },
+    onUsage(_usage, _route, meta) { usageMeta = meta; },
+  });
+  await f.run();
+  // 生成耗时只算首块之后那 400ms，不含 300ms 的等待
+  assert.equal(success.latencyMs, 300);
+  assert.equal(success.generationMs, 400);
+  assert.equal(success.throughput, 100);
+  assert.deepEqual(usageMeta, success);
+});

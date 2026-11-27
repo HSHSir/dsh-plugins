@@ -346,11 +346,22 @@ export async function* guardedStream({
     const verdict = classifyAttempt({ finish, thrown, didThrow, sawVisible, ended, cfg });
     // 首块时间：这是用户真正感知的等待，站点报的 p50 是群体口径，二者不是一回事。
     const latencyMs = Math.round((firstVisibleAt || performance.now()) - startedAt);
+    /**
+     * 生成速度：从「第一个可见字」到「流结束」之间产出的 token 数除以秒数。
+     *
+     * 为什么不用整轮耗时：首块延迟是排队与冷启动，跟吐字快慢是两件事，
+     * 混在一起算会让首块快的商家显得也快。只有两段都有真实时间戳时才算，
+     * 且样本间隔太短（<200ms）结果会被计时精度放大，直接不给值。
+     */
+    const finishedAt = performance.now();
+    const generationMs = firstVisibleAt && finishedAt > firstVisibleAt ? Math.round(finishedAt - firstVisibleAt) : 0;
+    const outputTokens = Number(lastUsage?.outputTokens || 0);
+    const throughput = outputTokens > 0 && generationMs >= 200 ? outputTokens / (generationMs / 1000) : 0;
     if (verdict.kind === 'ok') {
       if (lastUsage) {
-        try { onUsage?.(lastUsage, route); } catch { /* 记账故障 */ }
+        try { onUsage?.(lastUsage, route, { latencyMs, generationMs, throughput }); } catch { /* 记账故障 */ }
       }
-      try { onSuccess?.(route, { latencyMs }); } catch { /* 统计故障 */ }
+      try { onSuccess?.(route, { latencyMs, generationMs, throughput }); } catch { /* 统计故障 */ }
     } else if (verdict.kind !== 'cancelled') {
       // 在交出终结块之前同步记下失败，供上层辨认已输出内容的请求。
       try {

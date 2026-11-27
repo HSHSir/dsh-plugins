@@ -117,6 +117,27 @@ near('不同模型独立统计', store.usageRates('m2').get(7316).rate, 0.01);
 near('原模型不受影响', store.usageRates('m1').get(7316).rate, 0.9);
 eq('channelId=0 不记账', store.noteUsage({ model: 'm1', channelId: 0, cacheRead: 1, uncachedInput: 1 }), null);
 
+// ---- 1b. 生成速度（token/秒）----
+const speedStore = createStore({ dshHome: tempDir('speed'), logEvents: false, now: () => 1000000 });
+const speed1 = speedStore.noteUsage({ model: 'm1', channelId: 7001, cacheRead: 100, uncachedInput: 100, output: 500, generationMs: 2000 });
+near('生成速度 = 输出 token / 生成秒数', speed1.tokensPerSecond, 250);
+eq('速度样本计 1 次', Math.round(speed1.speedSamples), 1);
+// 没有耗时或耗时太短（<200ms）都不算速度样本，否则分母被计时精度放大
+const speedNoMs = speedStore.noteUsage({ model: 'm1', channelId: 7002, cacheRead: 100, uncachedInput: 100, output: 500 });
+eq('没有生成耗时就不给速度', speedNoMs.tokensPerSecond, 0);
+eq('没有生成耗时不计速度样本', Math.round(speedNoMs.speedSamples), 0);
+const speedShort = speedStore.noteUsage({ model: 'm1', channelId: 7003, cacheRead: 100, uncachedInput: 100, output: 5, generationMs: 120 });
+eq('耗时过短不算速度', speedShort.tokensPerSecond, 0);
+// 多笔累加：总输出 / 总耗时（不是各笔速度的平均）
+const speed2 = speedStore.noteUsage({ model: 'm1', channelId: 7001, cacheRead: 100, uncachedInput: 100, output: 1500, generationMs: 3000 });
+near('多笔按总量折算速度', speed2.tokensPerSecond, 400);
+eq('速度样本累加到 2 次', Math.round(speed2.speedSamples), 2);
+near('usageRates 带出生成速度', speedStore.usageRates('m1').get(7001).tokensPerSecond, 400);
+eq('无速度样本的商家速度为 0', speedStore.usageRates('m1').get(7002).tokensPerSecond, 0);
+// 衰减后速度（比值）不变：分子分母同乘一个系数
+const speedDecay = speedStore.usageRates('m1', '').get(7001);
+near('衰减不改变速度比值', speedDecay.tokensPerSecond, 400);
+
 const zeroStore = createStore({ dshHome: tempDir('zero'), logEvents: false });
 zeroStore.noteUsage({ model: 'm1', channelId: 5, cacheRead: 0, cacheWrite: 0, uncachedInput: 0 });
 eq('全 0 用量不入表', zeroStore.usageRates('m1').size, 0);
