@@ -1,0 +1,6 @@
+# 开发与打包依赖（普通运行不需要）
+-r requirements.txt
+pyinstaller>=6.0
+pillow>=10.0
+# 仅 scripts/rebuild_icon.py（重绘图标）需要
+numpy>=1.26

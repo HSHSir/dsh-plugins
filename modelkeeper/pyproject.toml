@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "modelkeeper"
+dynamic = ["version"]
+description = "模型管家：多 Agent 的模型配置管理（令牌探测 / 导入 / 价格与智能路由）"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+# 运行时只需要 PyYAML（DSH 页面的 YAML 读写）；其余全部为标准库
+dependencies = ["PyYAML>=6.0"]
+
+[project.optional-dependencies]
+dev = ["pyinstaller>=6.0", "pillow>=10.0"]
+
+[project.gui-scripts]
+# 安装后可用 `modelkeeper` 启动（Windows 下走 pythonw，不弹控制台）
+modelkeeper = "modelkeeper.__main__:main"
+
+[tool.setuptools.dynamic]
+# 版本号唯一来源：model_probe.APP_VERSION（与 exe 属性、窗口标题同源）
+version = { attr = "modelkeeper.model_probe.APP_VERSION" }
+
+[tool.setuptools.packages.find]
+include = ["modelkeeper*"]
+
+[tool.setuptools.package-data]
+modelkeeper = ["assets/*"]

@@ -7,6 +7,14 @@
 | [dsh-a6-failover](./dsh-a6-failover) | A6 请求故障换商、平台默认与手动智能路由切换（0.6.3） | A6 控制面访问令牌与用户 ID |
 | [dsh-session-progress](./dsh-session-progress) | 会话表头的进度栏：当前步骤、进展条、本回合用时 | 无 |
 
+## 配套工具
+
+不是 DSH 插件、装不进 `plugin_manager` 的独立程序放这里：
+
+| 工具 | 做什么 | 运行环境 |
+| --- | --- | --- |
+| [modelkeeper](./modelkeeper) | 模型管家：拉取中转站 / 官方端点的模型清单并测首字延迟与生成速度，一键写进 WorkBuddy、DeepSeekHarness、Codex、Claude Code 的配置，含备份还原与智能路由 | Python 3.12+（tkinter，读写 YAML 需 PyYAML） |
+
 ## 安装
 
 把要用的插件目录放到一个**固定位置**（之后不要删、不要移），然后：
